@@ -2,3 +2,7 @@
 *.tif
 *.tiff
 */x_arch/
+*.geojson
+*.txt
+*/train/
+**/train/
