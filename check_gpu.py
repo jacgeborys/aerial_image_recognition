@@ -6,6 +6,67 @@ import psutil
 import GPUtil
 import time
 from datetime import datetime
+import threading
+
+
+class GPUMonitor:
+    def __init__(self, log_interval=30):
+        self.log_interval = log_interval
+        self.running = False
+        self.log_file = "gpu_monitor.log"
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor_loop)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if hasattr(self, 'thread'):
+            self.thread.join()
+
+    def _monitor_loop(self):
+        while self.running:
+            try:
+                # Get GPU stats
+                gpu = GPUtil.getGPUs()[0]
+                torch_allocated = torch.cuda.memory_allocated() / 1024 ** 2
+                torch_reserved = torch.cuda.memory_reserved() / 1024 ** 2
+                process = psutil.Process()
+                cpu_percent = process.cpu_percent()
+                ram_usage = process.memory_info().rss / 1024 ** 2
+
+                # Create single-line status
+                status = (
+                    f"\rGPU: {gpu.load * 100:.0f}% | "
+                    f"Mem: {gpu.memoryUsed}/{gpu.memoryTotal}MB | "
+                    f"Temp: {gpu.temperature}°C | "
+                    f"PyT: {torch_allocated:.0f}/{torch_reserved:.0f}MB | "
+                    f"RAM: {ram_usage / 1024:.1f}GB"
+                )
+
+                # Clear line and print status
+                print(status, end='', flush=True)
+
+                # Log detailed information to file
+                log_msg = (
+                    f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+                    f"GPU Load: {gpu.load * 100:.1f}%\n"
+                    f"GPU Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB ({gpu.memoryUtil * 100:.1f}%)\n"
+                    f"GPU Temperature: {gpu.temperature}°C\n"
+                    f"PyTorch GPU Memory - Allocated: {torch_allocated:.1f}MB, Reserved: {torch_reserved:.1f}MB\n"
+                    f"CPU Usage: {cpu_percent:.1f}%\n"
+                    f"RAM Usage: {ram_usage:.1f}MB\n"
+                )
+
+                with open(self.log_file, 'a') as f:
+                    f.write(log_msg)
+
+            except Exception as e:
+                print(f"\rMonitoring error: {str(e)}", end='', flush=True)
+
+            time.sleep(self.log_interval)
 
 
 def check_gpu_setup():
@@ -42,106 +103,6 @@ def check_gpu_setup():
         print("\nCouldn't run nvidia-smi. Make sure it's in your system PATH.")
 
 
-def test_gpu_performance():
-    """Run a simple GPU performance test"""
-    if not torch.cuda.is_available():
-        print("GPU is not available!")
-        return
-
-    print("\n=== GPU Performance Test ===")
-
-    # Basic matrix multiplication test
-    try:
-        # Warm up GPU
-        torch.cuda.empty_cache()
-
-        # Create test tensors
-        size = 5000
-        print(f"\nRunning {size}x{size} matrix multiplication...")
-
-        # Create tensors with appropriate memory size for 6GB VRAM
-        size = 3000  # Reduced size for 6GB GPU
-        a = torch.randn(size, size, device='cuda')
-        b = torch.randn(size, size, device='cuda')
-
-        # Time the operation
-        torch.cuda.synchronize()
-        start_time = time.time()
-
-        c = torch.matmul(a, b)
-
-        torch.cuda.synchronize()
-        end_time = time.time()
-
-        print(f"Operation completed in {end_time - start_time:.2f} seconds")
-
-        # Memory test
-        print("\nMemory Test:")
-        print(f"Peak memory allocated: {torch.cuda.max_memory_allocated() / 1024 ** 3:.2f} GB")
-
-        # Clean up
-        del a, b, c
-        torch.cuda.empty_cache()
-
-    except Exception as e:
-        print(f"Error during performance test: {str(e)}")
-
-
-def monitor_gpu_usage(interval=1, duration=None):
-    """
-    Monitor GPU usage in real-time
-
-    Args:
-        interval (int): Update interval in seconds
-        duration (int): How long to monitor in seconds (None for indefinite)
-    """
-    try:
-        print("\n=== GPU Usage Monitor ===")
-        print("Press Ctrl+C to stop monitoring\n")
-
-        start_time = time.time()
-        while True:
-            # Clear screen (Windows)
-            os.system('cls' if os.name == 'nt' else 'clear')
-
-            # Get GPU information
-            gpus = GPUtil.getGPUs()
-
-            print(f"\nTimestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print("\nGPU Stats:")
-            print("-" * 50)
-
-            for gpu in gpus:
-                print(f"GPU ID: {gpu.id} ({gpu.name})")
-                print(f"Load: {gpu.load * 100:.1f}%")
-                print(f"Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB ({gpu.memoryUtil * 100:.1f}%)")
-                print(f"Temperature: {gpu.temperature}°C")
-                print("-" * 50)
-
-            # Also show PyTorch GPU memory stats
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024 ** 2
-                reserved = torch.cuda.memory_reserved() / 1024 ** 2
-                print("\nPyTorch GPU Memory:")
-                print(f"Allocated: {allocated:.1f}MB")
-                print(f"Reserved:  {reserved:.1f}MB")
-
-            # Check if duration is reached
-            if duration and (time.time() - start_time) > duration:
-                break
-
-            time.sleep(interval)
-
-    except KeyboardInterrupt:
-        print("\nMonitoring stopped by user")
-    except Exception as e:
-        print(f"\nError during monitoring: {str(e)}")
-
-
 if __name__ == "__main__":
-    # Run all diagnostics
+    # Run diagnostic when script is run directly
     check_gpu_setup()
-    test_gpu_performance()
-
-    # Start monitoring (runs until Ctrl+C)
-    monitor_gpu_usage(interval=1)

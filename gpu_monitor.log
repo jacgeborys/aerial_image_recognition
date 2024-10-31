@@ -1,0 +1,544 @@
+
+=== 2024-10-31 15:33:14 ===
+GPU Load: 2.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 45.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 603.9MB
+
+=== 2024-10-31 15:33:44 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 44.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 698.8MB
+
+=== 2024-10-31 15:34:14 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 44.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 698.7MB
+
+=== 2024-10-31 15:34:44 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 45.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 1452.0MB
+
+=== 2024-10-31 15:35:14 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 46.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 2303.8MB
+
+=== 2024-10-31 15:35:44 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 47.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3078.2MB
+
+=== 2024-10-31 15:36:14 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 48.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3628.6MB
+
+=== 2024-10-31 15:36:44 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 46.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3628.6MB
+
+=== 2024-10-31 15:37:14 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 44.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3638.0MB
+
+=== 2024-10-31 15:37:44 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 44.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3639.7MB
+
+=== 2024-10-31 15:38:14 ===
+GPU Load: 0.0%
+GPU Memory: 121.0MB / 6144.0MB (2.0%)
+GPU Temperature: 43.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3647.6MB
+
+=== 2024-10-31 15:38:44 ===
+GPU Load: 98.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 53.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 7546.7MB
+
+=== 2024-10-31 15:39:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 59.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 7334.5MB
+
+=== 2024-10-31 15:39:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 63.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 7318.6MB
+
+=== 2024-10-31 15:40:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 66.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 7291.1MB
+
+=== 2024-10-31 15:40:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 67.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 7177.6MB
+
+=== 2024-10-31 15:41:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 68.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4845.4MB
+
+=== 2024-10-31 15:41:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 70.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4845.7MB
+
+=== 2024-10-31 15:42:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 70.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4845.8MB
+
+=== 2024-10-31 15:42:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 71.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4850.5MB
+
+=== 2024-10-31 15:43:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 71.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4851.3MB
+
+=== 2024-10-31 15:43:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4852.3MB
+
+=== 2024-10-31 15:44:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 73.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4852.5MB
+
+=== 2024-10-31 15:44:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4826.5MB
+
+=== 2024-10-31 15:45:15 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4826.7MB
+
+=== 2024-10-31 15:45:45 ===
+GPU Load: 99.0%
+GPU Memory: 5933.0MB / 6144.0MB (96.6%)
+GPU Temperature: 74.0°C
+PyTorch GPU Memory - Allocated: 9168.8MB, Reserved: 9802.0MB
+CPU Usage: 0.0%
+RAM Usage: 4826.9MB
+
+=== 2024-10-31 15:47:22 ===
+GPU Load: 2.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 58.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 599.4MB
+
+=== 2024-10-31 15:47:52 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 56.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 1697.1MB
+
+=== 2024-10-31 15:48:23 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 56.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3117.1MB
+
+=== 2024-10-31 15:48:53 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 54.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3592.5MB
+
+=== 2024-10-31 15:49:23 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 53.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3598.9MB
+
+=== 2024-10-31 15:49:53 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 54.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3608.3MB
+
+=== 2024-10-31 15:50:23 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 53.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3616.2MB
+
+=== 2024-10-31 15:50:53 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 52.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3672.6MB
+
+=== 2024-10-31 15:51:23 ===
+GPU Load: 0.0%
+GPU Memory: 119.0MB / 6144.0MB (1.9%)
+GPU Temperature: 52.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 3724.3MB
+
+=== 2024-10-31 15:51:53 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 62.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4885.5MB
+
+=== 2024-10-31 15:52:23 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 66.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4890.9MB
+
+=== 2024-10-31 15:52:53 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 69.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4891.2MB
+
+=== 2024-10-31 15:53:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4891.5MB
+
+=== 2024-10-31 15:53:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4891.7MB
+
+=== 2024-10-31 15:54:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 72.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4891.8MB
+
+=== 2024-10-31 15:54:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 74.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4892.0MB
+
+=== 2024-10-31 15:55:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4892.1MB
+
+=== 2024-10-31 15:55:54 ===
+GPU Load: 98.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 4892.1MB
+
+=== 2024-10-31 15:56:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3324.3MB
+
+=== 2024-10-31 15:56:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3325.1MB
+
+=== 2024-10-31 15:57:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3325.4MB
+
+=== 2024-10-31 15:57:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3320.9MB
+
+=== 2024-10-31 15:58:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3321.1MB
+
+=== 2024-10-31 15:58:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3321.5MB
+
+=== 2024-10-31 15:59:24 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3322.1MB
+
+=== 2024-10-31 15:59:54 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3326.9MB
+
+=== 2024-10-31 16:00:25 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3326.9MB
+
+=== 2024-10-31 16:00:55 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 3327.0MB
+
+=== 2024-10-31 16:01:25 ===
+GPU Load: 98.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.0MB
+
+=== 2024-10-31 16:01:55 ===
+GPU Load: 98.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.1MB
+
+=== 2024-10-31 16:02:25 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1896.4MB
+
+=== 2024-10-31 16:02:55 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1896.5MB
+
+=== 2024-10-31 16:03:25 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1896.6MB
+
+=== 2024-10-31 16:03:55 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1896.7MB
+
+=== 2024-10-31 16:04:25 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.4MB
+
+=== 2024-10-31 16:04:55 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.4MB
+
+=== 2024-10-31 16:05:25 ===
+GPU Load: 99.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 76.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.5MB
+
+=== 2024-10-31 16:05:55 ===
+GPU Load: 98.0%
+GPU Memory: 5931.0MB / 6144.0MB (96.5%)
+GPU Temperature: 75.0°C
+PyTorch GPU Memory - Allocated: 9047.0MB, Reserved: 9662.0MB
+CPU Usage: 0.0%
+RAM Usage: 1901.5MB
+
+=== 2024-10-31 16:06:25 ===
+GPU Load: 0.0%
+GPU Memory: 129.0MB / 6144.0MB (2.1%)
+GPU Temperature: 70.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 693.5MB
+
+=== 2024-10-31 16:06:56 ===
+GPU Load: 0.0%
+GPU Memory: 129.0MB / 6144.0MB (2.1%)
+GPU Temperature: 63.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 476.1MB
+
+=== 2024-10-31 16:07:26 ===
+GPU Load: 0.0%
+GPU Memory: 129.0MB / 6144.0MB (2.1%)
+GPU Temperature: 61.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 622.6MB
+
+=== 2024-10-31 16:07:56 ===
+GPU Load: 0.0%
+GPU Memory: 161.0MB / 6144.0MB (2.6%)
+GPU Temperature: 59.0°C
+PyTorch GPU Memory - Allocated: 0.0MB, Reserved: 0.0MB
+CPU Usage: 0.0%
+RAM Usage: 1343.6MB

@@ -20,13 +20,16 @@ from pyproj import Transformer
 from shapely.ops import transform
 import warnings
 import traceback
-warnings.filterwarnings('ignore')
+from check_gpu import GPUMonitor  # Import the monitor from check_gpu.py
 
 
 class CarDetector:
     def __init__(self):
         print("Initializing detector...")
         self.base_dir = r"C:\Users\Asus\OneDrive\Pulpit\Rozne\QGIS\car_recognition"
+
+        # Initialize GPU monitor
+        self.gpu_monitor = GPUMonitor(log_interval=30)
 
         # Create directory structure
         self.setup_directories()
@@ -36,24 +39,25 @@ class CarDetector:
         self.frame_path = os.path.join(self.base_dir, "gis", "shp", "frames", "warsaw.shp")
         self.output_path = os.path.join(self.base_dir, "gis", "shp", "detection_results", "warsaw.geojson")
 
-        # Optimized config for GTX 1660 Ti (6GB VRAM)
         self.config = {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
             'tile_size_meters': 64.0,
             'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
-            'batch_size': 1024,  # Reduced for better stability
-            'checkpoint_interval': 1000,  # More frequent checkpoints
-            'num_workers': 8,  # Reduced to prevent memory overload
-            'queue_size': 256,  # Reduced for better memory management
-            'max_gpu_memory': 4.5,  # Leave 1.5GB for system and other processes
-            'min_gpu_memory': 2.0,  # Minimum required for operation
-            'ram_chunk_size': 128,  # Reduced for better memory stability
-            'duplicate_distance': 2.0  # Meters
+            'batch_size': 2048,  # Increased for better speed
+            'checkpoint_interval': 5000,  # Less frequent checkpoints
+            'num_workers': 16,  # Balanced for your system
+            'queue_size': 1024,  # Increased for better GPU utilization
+            'max_gpu_memory': 5.0,  # Using more GPU memory
+            'min_gpu_memory': 2.0,
+            'ram_chunk_size': 512,  # Increased for better performance
+            'duplicate_distance': 2.0
         }
 
-        # Initialize checkpoint files
+        # Initialize checkpoint files and last cleanup time
         self.initialize_checkpoints()
+        self.last_cleanup_time = time.time()
+        self.cleanup_interval = 300  # Clean up every 5 minutes
 
         print(f"\nConfiguration:")
         print(f"- GPU target memory: {self.config['min_gpu_memory']}-{self.config['max_gpu_memory']}GB")
@@ -425,6 +429,9 @@ class CarDetector:
     def detect(self):
         """Main detection process with optimized performance"""
         try:
+            # Start GPU monitoring
+            self.gpu_monitor.start()
+
             start_time = time.time()
 
             # Load frame
@@ -546,6 +553,8 @@ class CarDetector:
             torch.cuda.empty_cache()
             gc.collect()
 
+            self.gpu_monitor.stop()
+
 def main():
     """Main execution with error handling"""
     try:
@@ -586,10 +595,6 @@ def main():
         print(f"Error in main process: {str(e)}")
         traceback.print_exc()
         return None
-    finally:
-        # Final cleanup
-        torch.cuda.empty_cache()
-        gc.collect()
 
 if __name__ == "__main__":
     main()
