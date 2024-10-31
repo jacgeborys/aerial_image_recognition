@@ -44,8 +44,8 @@ class CarDetector:
             'tile_size_meters': 64.0,
             'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
-            'batch_size': 2048,  # Increased for better speed
-            'checkpoint_interval': 5000,  # Less frequent checkpoints
+            'batch_size': 1024,  # Increased for better speed
+            'checkpoint_interval': 1000,  # Less frequent checkpoints
             'num_workers': 16,  # Balanced for your system
             'queue_size': 1024,  # Increased for better GPU utilization
             'max_gpu_memory': 5.0,  # Using more GPU memory
@@ -188,7 +188,7 @@ class CarDetector:
         except Exception:
             return None
 
-    def fetch_images_parallel(self, tile_bboxes):
+    def fetch_images_parallel(self, tile_bboxes, progress_bar=None):
         """Fetch images with parallel processing and timeout"""
         results = []
         futures = []
@@ -206,6 +206,9 @@ class CarDetector:
                         results.append((img, bbox))
                 except (concurrent.futures.TimeoutError, Exception) as e:
                     continue
+                finally:
+                    if progress_bar:
+                        progress_bar.update(1)
 
         return results
 
@@ -431,7 +434,6 @@ class CarDetector:
         try:
             # Start GPU monitoring
             self.gpu_monitor.start()
-
             start_time = time.time()
 
             # Load frame
@@ -456,7 +458,14 @@ class CarDetector:
                 all_detections = []
 
             print(f"\nProcessing {total_tiles} tiles...")
-            progress_bar = tqdm(total=total_tiles, initial=processed_count, desc="Processing", unit="tiles")
+            progress_bar = tqdm(
+                total=total_tiles,
+                initial=processed_count,
+                desc="Processing",
+                unit="tiles",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}"
+            )
+            progress_bar.set_postfix({"detections": len(all_detections)})
 
             last_checkpoint = processed_count
 
@@ -467,8 +476,8 @@ class CarDetector:
                     end_idx = min(idx + self.config['batch_size'], total_tiles)
                     current_batch = tiles[idx:end_idx]
 
-                    # Process batch
-                    image_bbox_pairs = self.fetch_images_parallel(current_batch)
+                    # Process batch and update progress
+                    image_bbox_pairs = self.fetch_images_parallel(current_batch, progress_bar)
 
                     if image_bbox_pairs:
                         batch_detections = self.process_tile_batch(image_bbox_pairs)
@@ -478,26 +487,12 @@ class CarDetector:
                             all_detections = self.remove_duplicates(all_detections)
 
                         all_detections.extend(batch_detections)
-
-                        # Update progress
-                        batch_processed = len(current_batch)
-                        processed_count += batch_processed
-                        progress_bar.update(batch_processed)
+                        progress_bar.set_postfix({"detections": len(all_detections)})
 
                         # Check for checkpoint
                         if processed_count - last_checkpoint >= self.config['checkpoint_interval']:
                             self.save_checkpoint(all_detections, processed_count, total_tiles)
                             last_checkpoint = processed_count
-
-                        # Print status every 10k tiles
-                        if processed_count % 10000 == 0:
-                            elapsed = (time.time() - start_time) / 60
-                            remaining = (elapsed / (processed_count - start_idx + 1)) * (total_tiles - processed_count)
-                            print(f"\nStatus Update:")
-                            print(f"Time: {elapsed:.1f}min elapsed, ~{remaining:.1f}min remaining")
-                            print(f"Memory: {psutil.Process().memory_info().rss/1e9:.1f}GB RAM")
-                            print(f"GPU: {torch.cuda.memory_allocated()/1e9:.1f}GB")
-                            print(f"Detections: {len(batch_detections)} in batch, {len(all_detections)} total")
 
                     # Clean up
                     del image_bbox_pairs
