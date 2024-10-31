@@ -6,3 +6,8 @@
 *.txt
 */train/
 **/train/
+.tmp*/
+*.shp
+*.shx
+*.dbf
+*.prj

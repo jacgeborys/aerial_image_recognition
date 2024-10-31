@@ -1,14 +1,13 @@
-2024-10-29 00:33:38,306 - INFO - 
+2024-10-29 11:23:39,466 - INFO - 
 Model Analysis:
-2024-10-29 00:33:38,306 - INFO - Input details:
-2024-10-29 00:33:38,306 - INFO - Name: images
-2024-10-29 00:33:38,307 - INFO - Shape: [1, 3, 640, 640]
-2024-10-29 00:33:38,307 - INFO - Type: tensor(float)
-2024-10-29 00:33:38,307 - INFO - 
+2024-10-29 11:23:39,466 - INFO - Input details:
+2024-10-29 11:23:39,466 - INFO - Name: images
+2024-10-29 11:23:39,467 - INFO - Shape: [1, 3, 640, 640]
+2024-10-29 11:23:39,467 - INFO - Type: tensor(float)
+2024-10-29 11:23:39,467 - INFO - 
 Output details:
-2024-10-29 00:33:38,307 - INFO - Name: output
-2024-10-29 00:33:38,308 - INFO - Shape: [1, 25200, 6]
-2024-10-29 00:33:38,308 - INFO - Type: tensor(float)
-2024-10-29 00:33:38,308 - INFO - 
+2024-10-29 11:23:39,467 - INFO - Name: output
+2024-10-29 11:23:39,467 - INFO - Shape: [1, 25200, 6]
+2024-10-29 11:23:39,467 - INFO - Type: tensor(float)
+2024-10-29 11:23:39,467 - INFO - 
 Number of classes: 1
-2024-10-29 00:43:18,093 - INFO - Created 301 records
