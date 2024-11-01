@@ -10,31 +10,44 @@ import time
 class TileGenerator:
     @staticmethod
     def generate_tiles(bounds, tile_size_meters=64.0, overlap=0.1):
-        """Generate tile coordinates with overlap"""
+        """Generate tile coordinates with overlap using local UTM psrojection"""
         minx, miny, maxx, maxy = bounds
-        mid_lat = (miny + maxy) / 2
-
-        # Convert meters to degrees
-        earth_radius = 6378137
-        lat_deg = tile_size_meters / (earth_radius * math.pi / 180)
-        lon_deg = tile_size_meters / (earth_radius * math.pi / 180 * math.cos(math.radians(mid_lat)))
-
-        step_lon = lon_deg * (1 - overlap)
-        step_lat = lat_deg * (1 - overlap)
-
+        center_lon = (minx + maxx) / 2
+        center_lat = (miny + maxy) / 2
+        
+        # Determine UTM zone from center coordinates
+        utm_zone = int((center_lon + 180) / 6) + 1
+        utm_hemisphere = 'north' if center_lat >= 0 else 'south'
+        utm_epsg = 32600 + utm_zone if utm_hemisphere == 'north' else 32700 + utm_zone
+        
+        # Create transformers
+        wgs84_to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
+        utm_to_wgs84 = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
+        
+        # Convert bounds to UTM
+        utm_minx, utm_miny = wgs84_to_utm.transform(minx, miny)
+        utm_maxx, utm_maxy = wgs84_to_utm.transform(maxx, maxy)
+        
+        # Calculate steps in meters
+        step_size = tile_size_meters * (1 - overlap)
+        
         tiles = []
-        x = minx
-        while x < maxx:
-            y = miny
-            while y < maxy:
-                tiles.append((
-                    x, y,
-                    min(x + lon_deg, maxx),
-                    min(y + lat_deg, maxy)
-                ))
-                y += step_lat
-            x += step_lon
-
+        utm_x = utm_minx
+        while utm_x < utm_maxx:
+            utm_y = utm_miny
+            while utm_y < utm_maxy:
+                # Calculate tile bounds in UTM
+                tile_utm_maxx = min(utm_x + tile_size_meters, utm_maxx)
+                tile_utm_maxy = min(utm_y + tile_size_meters, utm_maxy)
+                
+                # Convert back to WGS84
+                lon1, lat1 = utm_to_wgs84.transform(utm_x, utm_y)
+                lon2, lat2 = utm_to_wgs84.transform(tile_utm_maxx, tile_utm_maxy)
+                
+                tiles.append((lon1, lat1, lon2, lat2))
+                utm_y += step_size
+            utm_x += step_size
+            
         return tiles
 
 
