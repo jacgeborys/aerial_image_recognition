@@ -84,7 +84,7 @@ class WMSHandler:
         """Fetch batch with adaptive worker adjustment and backoff"""
         results = []
         failed_tiles = []
-        self.current_workers = min(32, self.num_workers)  # Reduced from 48
+        self.current_workers = min(25, self.num_workers)  # Reduced to match chunk size
         max_batch_retries = 3
         backoff_time = 1
 
@@ -92,36 +92,45 @@ class WMSHandler:
             futures = []
             current_tiles = failed_tiles if retry_attempt > 0 else tile_bboxes
             
+            if retry_attempt > 0:
+                print(f"\nRetrying {len(failed_tiles)} failed tiles with {self.current_workers} workers...")
+                time.sleep(backoff_time)
+                backoff_time *= 2
+            
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self.current_workers) as executor:
-                    # Process in smaller chunks (128 tiles at once)
-                    chunk_size = min(128, len(current_tiles))  # Reduced from 256
+                    # Process exactly 25 tiles at once
+                    chunk_size = 25
                     for i in range(0, len(current_tiles), chunk_size):
                         chunk = current_tiles[i:i + chunk_size]
                         
+                        # 1 second break between chunks
                         if i > 0:
-                            time.sleep(0.2)  # Slightly increased delay between chunks
+                            time.sleep(1.0)
                         
+                        # Submit all tiles in this chunk at once
                         for bbox in chunk:
                             futures.append((executor.submit(self.get_single_image, bbox), bbox))
 
-                    failed_tiles = []
-                    for future, bbox in futures:
-                        try:
-                            img = future.result(timeout=self.timeout)
-                            if img is not None:
-                                results.append((img, bbox))
-                            else:
+                        # Wait for this chunk to complete before moving to next
+                        failed_tiles = []
+                        chunk_futures = futures[-len(chunk):]
+                        for future, bbox in chunk_futures:
+                            try:
+                                img = future.result(timeout=self.timeout)
+                                if img is not None:
+                                    results.append((img, bbox))
+                                else:
+                                    failed_tiles.append(bbox)
+                            except concurrent.futures.TimeoutError:
                                 failed_tiles.append(bbox)
-                        except concurrent.futures.TimeoutError:
-                            failed_tiles.append(bbox)
-                            self.current_workers = max(16, self.current_workers - 2)
-                        except Exception as e:
-                            failed_tiles.append(bbox)
-                            print(f"\rConnection error for tile {bbox}: {str(e)}", end='\r', flush=True)
-                        finally:
-                            if progress_bar and retry_attempt == 0:
-                                progress_bar.update(1)
+                                self.current_workers = max(16, self.current_workers - 2)
+                            except Exception as e:
+                                failed_tiles.append(bbox)
+                                print(f"\rConnection error for tile {bbox}: {str(e)}", end='\r', flush=True)
+                            finally:
+                                if progress_bar and retry_attempt == 0:
+                                    progress_bar.update(1)
 
                     if not failed_tiles:
                         break
