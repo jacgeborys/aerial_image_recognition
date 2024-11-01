@@ -46,28 +46,58 @@ class CheckpointManager:
         self.temp_state_file = os.path.join(checkpoint_dir, "temp_state.json")
         self.temp_data_file = os.path.join(checkpoint_dir, "temp_detections.geojson")
 
+    def load_checkpoint(self):
+        """Load last processing state and detections"""
+        last_index = 0
+        previous_detections = []
+
+        if os.path.exists(self.state_file) and os.path.exists(self.data_file):
+            try:
+                # Load state
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                last_index = state.get('last_processed_index', 0)
+
+                # Load previous detections
+                if os.path.exists(self.data_file):
+                    gdf = gpd.read_file(self.data_file)
+                    if not gdf.empty:
+                        previous_detections = [
+                            {
+                                'lon': point.x,
+                                'lat': point.y,
+                                'confidence': conf
+                            }
+                            for point, conf in zip(gdf.geometry, gdf.confidence)
+                        ]
+                        print(f"\nLoaded {len(previous_detections)} previous detections")
+
+            except Exception as e:
+                print(f"\nCheckpoint load error: {str(e)}")
+                return 0, []
+
+        return last_index, previous_detections
+
     def save_checkpoint(self, detections, processed_tiles, total_tiles):
         """Save processing state and detections atomically"""
         try:
-            # First save to temporary files
-            # Save detections
+            # Save to temporary files
             if detections:
                 gdf = self._create_geodataframe(detections)
                 gdf.to_file(self.temp_data_file, driver='GeoJSON')
 
-            # Save state
             state = {
                 'processed_tiles': processed_tiles,
                 'total_tiles': total_tiles,
                 'last_processed_index': processed_tiles - 1,
                 'timestamp': time.time(),
-                'num_detections': len(detections)  # Add detection count for validation
+                'num_detections': len(detections)
             }
 
             with open(self.temp_state_file, 'w') as f:
                 json.dump(state, f)
 
-            # If both temporary files were created successfully, move them to final location
+            # Move temporary files to final location
             if os.path.exists(self.temp_data_file):
                 if os.path.exists(self.data_file):
                     os.remove(self.data_file)
@@ -91,17 +121,6 @@ class CheckpointManager:
                     except:
                         pass
             return False
-
-    def load_checkpoint(self):
-        """Load last processing state"""
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                return state.get('last_processed_index', 0)
-            except Exception as e:
-                print(f"\nCheckpoint load error: {str(e)}")
-        return 0
 
     def _create_geodataframe(self, detections):
         """Convert detections to GeoDataFrame"""

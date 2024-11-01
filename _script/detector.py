@@ -179,10 +179,10 @@ class CarDetector:
             )
             total_tiles = len(tiles)
             
-            # Get starting position from checkpoint
-            start_idx = self.checkpoint_manager.load_checkpoint()
+            # Get starting position and previous detections from checkpoint
+            start_idx, previous_detections = self.checkpoint_manager.load_checkpoint()
             processed_count = start_idx
-            all_detections = []
+            all_detections = previous_detections.copy()  # Start with previous detections
             last_checkpoint = processed_count
             
             if start_idx > 0:
