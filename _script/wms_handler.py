@@ -82,6 +82,37 @@ class WMSHandler:
                     print(f"\rFailed after {max_retries} attempts: {str(e)}\r", end='')
         return None
 
+    def get_single_large_image(self, bbox, max_retries=3, retry_delay=1):
+        """Fetch 280x280m image with adaptive retry"""
+        current_delay = retry_delay
+        
+        for attempt in range(max_retries):
+            try:
+                if self.wms is None and not self._connect():
+                    time.sleep(current_delay)
+                    current_delay *= 2
+                    continue
+
+                img = self.wms.getmap(
+                    layers=['Raster'],
+                    srs='EPSG:4326',
+                    bbox=bbox,
+                    size=(2800, 2800),  # 280m at 10cm/px resolution
+                    format='image/jpeg',
+                    transparent=False,
+                    timeout=self.timeout * 2  # Double timeout for larger images
+                )
+                return Image.open(io.BytesIO(img.read())).convert('RGB')
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(current_delay)
+                    current_delay *= 2
+                    self._connect()
+                else:
+                    print(f"\rFailed after {max_retries} attempts: {str(e)}\r", end='')
+        return None
+
     def fetch_batch(self, tile_bboxes, progress_bar=None):
         """Fetch batch with adaptive worker adjustment and backoff"""
         results = []

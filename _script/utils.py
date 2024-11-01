@@ -9,8 +9,8 @@ import time
 
 class TileGenerator:
     @staticmethod
-    def generate_tiles(bounds, tile_size_meters=64.0, overlap=0.1):
-        """Generate tile coordinates with overlap using local UTM psrojection"""
+    def generate_tiles(bounds, tile_size_meters=280.0, overlap=10.0):
+        """Generate tile coordinates with overlap using local UTM projection"""
         minx, miny, maxx, maxy = bounds
         center_lon = (minx + maxx) / 2
         center_lat = (miny + maxy) / 2
@@ -28,8 +28,8 @@ class TileGenerator:
         utm_minx, utm_miny = wgs84_to_utm.transform(minx, miny)
         utm_maxx, utm_maxy = wgs84_to_utm.transform(maxx, maxy)
         
-        # Calculate steps in meters
-        step_size = tile_size_meters * (1 - overlap)
+        # Calculate step size in meters (280m - 10m overlap)
+        step_size = tile_size_meters - overlap
         
         tiles = []
         utm_x = utm_minx
@@ -212,3 +212,34 @@ class ResultsManager:
             {'geometry': points, 'confidence': confs},
             crs="EPSG:4326"
         )
+
+def split_large_tile(image, bbox, model_tile_size=64, overlap=10):
+    """Split 280x280m image into 64x64m tiles with 10m overlap"""
+    img_width, img_height = image.size
+    meters_per_pixel = 0.1  # 10cm/px resolution
+    
+    # Calculate sizes in pixels
+    model_pixels = int(model_tile_size / meters_per_pixel)  # 640px
+    overlap_pixels = int(overlap / meters_per_pixel)  # 100px
+    step_pixels = model_pixels - overlap_pixels  # 540px
+    
+    tiles = []
+    for y in range(0, img_height - model_pixels + 1, step_pixels):
+        for x in range(0, img_width - model_pixels + 1, step_pixels):
+            # Extract tile image
+            tile_img = image.crop((x, y, x + model_pixels, y + model_pixels))
+            
+            # Calculate tile bbox
+            lon_span = bbox[2] - bbox[0]
+            lat_span = bbox[3] - bbox[1]
+            
+            tile_bbox = (
+                bbox[0] + (x / img_width) * lon_span,
+                bbox[1] + (y / img_height) * lat_span,
+                bbox[0] + ((x + model_pixels) / img_width) * lon_span,
+                bbox[1] + ((y + model_pixels) / img_height) * lat_span
+            )
+            
+            tiles.append((tile_img, tile_bbox))
+    
+    return tiles
