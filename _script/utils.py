@@ -93,31 +93,15 @@ class CheckpointManager:
             return False
 
     def load_checkpoint(self):
-        """Load and validate checkpoint"""
-        if not (os.path.exists(self.state_file) and os.path.exists(self.data_file)):
-            return None, []
-
-        try:
-            # Load state first
-            with open(self.state_file, 'r') as f:
-                state = json.load(f)
-
-            # Load detections
-            gdf = gpd.read_file(self.data_file)
-            detections = gdf.to_dict('records') if not gdf.empty else []
-
-            # Validate checkpoint
-            if len(detections) != state.get('num_detections', 0):
-                print("\nWarning: Checkpoint validation failed - detection counts don't match")
-                print(f"State file shows {state.get('num_detections', 0)} detections")
-                print(f"Data file contains {len(detections)} detections")
-                return None, []
-
-            return state, detections
-
-        except Exception as e:
-            print(f"\nCheckpoint load error: {str(e)}")
-            return None, []
+        """Load last processing state"""
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                return state.get('last_processed_index', 0)
+            except Exception as e:
+                print(f"\nCheckpoint load error: {str(e)}")
+        return 0
 
     def _create_geodataframe(self, detections):
         """Convert detections to GeoDataFrame"""

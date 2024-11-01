@@ -170,43 +170,28 @@ class CarDetector:
         try:
             tqdm.write("\nStarting detection process...")
             
-            # Load checkpoint if exists
-            state, checkpoint_detections = self.checkpoint_manager.load_checkpoint()
-            if state:
-                start_idx = state['last_processed_index'] + 1
-                processed_count = state['processed_tiles']
-                all_detections = checkpoint_detections
-                last_checkpoint = processed_count  # Initialize last_checkpoint
-                tqdm.write(f"\nResuming from checkpoint:")
-                tqdm.write(f"- Processed tiles: {processed_count}")
-                tqdm.write(f"- Current detections: {len(all_detections)}")
-            else:
-                processed_count = 0
-                start_idx = 0
-                all_detections = []
-                last_checkpoint = 0  # Initialize last_checkpoint for fresh start
-
-            # Initialize GPU monitor
-            self.gpu_monitor = GPUMonitor(log_interval=30)
-            self.gpu_monitor.start()
-            start_time = time.time()
-
             # Load frame and generate tiles
-            tqdm.write("\nLoading frame and generating tiles...")
             frame_gdf = gpd.read_file(self.frame_path)
-            if frame_gdf.crs.to_epsg() != 4326:
-                frame_gdf = frame_gdf.to_crs(epsg=4326)
-
             tiles = TileGenerator.generate_tiles(
                 frame_gdf.total_bounds,
                 self.config['tile_size_meters'],
                 self.config['tile_overlap']
             )
             total_tiles = len(tiles)
-            tqdm.write(f"Generated {total_tiles} tiles")
+            
+            # Get starting position from checkpoint
+            start_idx = self.checkpoint_manager.load_checkpoint()
+            processed_count = start_idx
+            all_detections = []
+            last_checkpoint = processed_count
+            
+            if start_idx > 0:
+                tqdm.write(f"\nResuming from checkpoint at tile {start_idx} of {total_tiles}")
 
-            del frame_gdf
-            gc.collect()
+            # Initialize GPU monitor
+            self.gpu_monitor = GPUMonitor(log_interval=30)
+            self.gpu_monitor.start()
+            start_time = time.time()
 
             # Create main progress bar
             main_progress = tqdm(
