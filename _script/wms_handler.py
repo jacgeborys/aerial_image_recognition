@@ -7,6 +7,8 @@ from tqdm import tqdm
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import json
+import os
 
 
 class WMSHandler:
@@ -143,8 +145,28 @@ class WMSHandler:
                     break
 
         if failed_tiles:
-            print(f"\nPermanently failed to fetch {len(failed_tiles)} tiles after {max_batch_retries} attempts")
+            # Log failed tiles to a file
+            with open('failed_tiles.json', 'a') as f:
+                json.dump({
+                    'timestamp': time.time(),
+                    'failed_tiles': [
+                        {
+                            'bbox': bbox,
+                            'center': ((bbox[0] + bbox[2])/2, (bbox[1] + bbox[3])/2)
+                        } 
+                        for bbox in failed_tiles
+                    ]
+                }, f)
+                f.write('\n')
             
+            print(f"\nFailed tiles have been logged to 'failed_tiles.json'")
+            print(f"Failed area centers (lon,lat):")
+            for bbox in failed_tiles[:5]:  # Show first 5
+                center = ((bbox[0] + bbox[2])/2, (bbox[1] + bbox[3])/2)
+                print(f"  {center}")
+            if len(failed_tiles) > 5:
+                print(f"  ... and {len(failed_tiles)-5} more")
+        
         return results
 
     def fetch_all(self, all_tiles, batch_size=1024):
@@ -159,3 +181,44 @@ class WMSHandler:
                 all_results.extend(batch_results)
 
         return all_results
+
+    def process_failed_tiles(self):
+        """Process tiles that failed in previous runs"""
+        if not os.path.exists('failed_tiles.json'):
+            return []
+        
+        try:
+            with open('failed_tiles.json', 'r') as f:
+                failed_records = [json.loads(line) for line in f if line.strip()]
+            
+            # Collect all unique failed tiles
+            all_failed_tiles = []
+            for record in failed_records:
+                all_failed_tiles.extend([tile['bbox'] for tile in record['failed_tiles']])
+            all_failed_tiles = list(set(map(tuple, all_failed_tiles)))
+            
+            if all_failed_tiles:
+                print(f"\nAttempting to process {len(all_failed_tiles)} previously failed tiles...")
+                results = self.fetch_batch(all_failed_tiles)
+                
+                # Remove processed tiles from failed_tiles.json
+                successful_tiles = set(bbox for img, bbox in results)
+                remaining_failed = [
+                    tile for tile in all_failed_tiles 
+                    if tuple(tile) not in successful_tiles
+                ]
+                
+                if remaining_failed:
+                    with open('failed_tiles.json', 'w') as f:
+                        json.dump({
+                            'timestamp': time.time(),
+                            'failed_tiles': [{'bbox': bbox} for bbox in remaining_failed]
+                        }, f)
+                else:
+                    os.remove('failed_tiles.json')
+                    
+                return results
+                
+        except Exception as e:
+            print(f"Error processing failed tiles: {str(e)}")
+            return []

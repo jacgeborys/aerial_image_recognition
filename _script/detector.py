@@ -53,7 +53,7 @@ class CarDetector:
             'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
             'batch_size': 1024,
-            'checkpoint_interval': 1000,
+            'checkpoint_interval': 512,
             'num_workers': 16,
             'queue_size': 1024,
             'max_gpu_memory': 5.0,
