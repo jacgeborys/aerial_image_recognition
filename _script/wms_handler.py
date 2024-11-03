@@ -73,21 +73,40 @@ class WMSHandler:
                 width_meters = abs(x2 - x1)
                 height_meters = abs(y2 - y1)
                 
-                # Request image based on resolution
-                target_width = int(width_meters / self.resolution)
-                target_height = int(height_meters / self.resolution)
+                # Calculate aspect ratio
+                aspect_ratio = width_meters / height_meters
                 
-                # Cap at reasonable size and maintain aspect ratio
-                min_size = 3840
+                # Base dimensions
+                min_size = 3840  # Keep high resolution
                 max_size = 4096
-                if target_width > max_size or target_height > max_size:
-                    scale = max_size / max(target_width, target_height)
-                    target_width = int(target_width * scale)
-                    target_height = int(target_height * scale)
-                elif target_width < min_size or target_height < min_size:
-                    scale = min_size / min(target_width, target_height)
-                    target_width = int(target_width * scale)
-                    target_height = int(target_height * scale)
+                
+                # Handle extreme aspect ratios
+                if aspect_ratio > 2 or aspect_ratio < 0.5:
+                    # For very elongated tiles, adjust the shorter dimension
+                    if width_meters > height_meters:
+                        target_width = max_size
+                        target_height = int(max_size / aspect_ratio)
+                    else:
+                        target_height = max_size
+                        target_width = int(max_size * aspect_ratio)
+                else:
+                    # Normal case - use resolution-based calculation
+                    target_width = int(width_meters / self.resolution)
+                    target_height = int(height_meters / self.resolution)
+                    
+                    # Apply size limits while maintaining aspect ratio
+                    if target_width > max_size or target_height > max_size:
+                        scale = max_size / max(target_width, target_height)
+                        target_width = int(target_width * scale)
+                        target_height = int(target_height * scale)
+                    elif target_width < min_size or target_height < min_size:
+                        scale = min_size / min(target_width, target_height)
+                        target_width = int(target_width * scale)
+                        target_height = int(target_height * scale)
+
+                # Ensure dimensions are valid
+                target_width = max(min(target_width, max_size), 256)
+                target_height = max(min(target_height, max_size), 256)
 
                 img = self.wms.getmap(
                     layers=['Raster'],
