@@ -14,11 +14,12 @@ import os
 
 
 class WMSHandler:
-    def __init__(self, wms_url, num_workers=32, timeout=30):
+    def __init__(self, wms_url, num_workers=32, timeout=30, resolution=0.1):
         print("Initializing WMS connection...")
         self.wms_url = wms_url
         self.num_workers = num_workers
         self.timeout = timeout
+        self.resolution = resolution  # meters per pixel
         self.wms = None
         self.session = self._create_session()
         self.min_workers = 8  # New: minimum workers
@@ -64,16 +65,38 @@ class WMSHandler:
                     current_delay *= 2
                     continue
 
+                # Calculate required size for target resolution
+                utm_zone = int((bbox[0] + 180) / 6) + 1
+                transformer = Transformer.from_crs("EPSG:4326", f"EPSG:326{utm_zone}", always_xy=True)
+                x1, y1 = transformer.transform(bbox[0], bbox[1])
+                x2, y2 = transformer.transform(bbox[2], bbox[3])
+                width_meters = abs(x2 - x1)
+                height_meters = abs(y2 - y1)
+                
+                # Request image based on resolution
+                target_width = int(width_meters / self.resolution)
+                target_height = int(height_meters / self.resolution)
+                
+                # Cap at reasonable size and maintain aspect ratio
+                max_size = 1280
+                if target_width > max_size or target_height > max_size:
+                    scale = max_size / max(target_width, target_height)
+                    target_width = int(target_width * scale)
+                    target_height = int(target_height * scale)
+
                 img = self.wms.getmap(
                     layers=['Raster'],
-                    srs='EPSG:4326',  # Use WGS84 for WMS request
+                    srs='EPSG:4326',
                     bbox=bbox,
-                    size=(640, 640),
+                    size=(target_width, target_height),
                     format='image/jpeg',
                     transparent=False,
                     timeout=self.timeout
                 )
-                return Image.open(io.BytesIO(img.read())).convert('RGB')
+                
+                # Resize to 640x640 for model input
+                image = Image.open(io.BytesIO(img.read())).convert('RGB')
+                return image.resize((640, 640), Image.Resampling.LANCZOS)
 
             except Exception as e:
                 if attempt < max_retries - 1:

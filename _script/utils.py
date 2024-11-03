@@ -165,7 +165,7 @@ class CheckpointManager:
             crs="EPSG:4326"
         )
 class ResultsManager:
-    def __init__(self, duplicate_distance=2.0):
+    def __init__(self, duplicate_distance=0.5):
         self.duplicate_distance = duplicate_distance
 
     def remove_duplicates(self, detections):
@@ -174,6 +174,7 @@ class ResultsManager:
             return []
 
         try:
+            initial_count = len(detections)
             gdf = self._create_geodataframe(detections)
 
             # Convert to UTM for distance calculations
@@ -193,6 +194,14 @@ class ResultsManager:
                 lambda p: transform(transformer.transform, p)
             )
 
+            final_count = len(filtered_gdf)
+            duplicates_removed = initial_count - final_count
+            print(f"\nDuplicate Removal Stats:")
+            print(f"- Initial detections: {initial_count}")
+            print(f"- Unique detections: {final_count}")
+            print(f"- Duplicates removed: {duplicates_removed} ({(duplicates_removed/initial_count*100):.1f}%)")
+            print(f"- Distance threshold: {self.duplicate_distance}m")
+
             return filtered_gdf.to_dict('records')
 
         except Exception as e:
@@ -202,14 +211,21 @@ class ResultsManager:
     def _find_unique_points(self, gdf):
         """Find unique points based on distance threshold"""
         kept_indices = []
-        for idx in gdf.index:
-            if idx in kept_indices:
-                continue
+        remaining_indices = set(gdf.index)
 
+        while remaining_indices:
+            # Get highest confidence point from remaining points
+            idx = max(remaining_indices, key=lambda i: gdf.loc[i, 'confidence'])
             point = gdf.loc[idx, 'geometry']
-            distances = gdf['geometry'].apply(lambda p: point.distance(p))
-            duplicates = distances[distances < self.duplicate_distance].index
-            kept_indices.extend(duplicates)
+            
+            # Add to kept points
+            kept_indices.append(idx)
+            remaining_indices.remove(idx)
+            
+            # Remove all points within threshold distance
+            nearby = [i for i in remaining_indices 
+                     if point.distance(gdf.loc[i, 'geometry']) < self.duplicate_distance]
+            remaining_indices -= set(nearby)
 
         return kept_indices
 

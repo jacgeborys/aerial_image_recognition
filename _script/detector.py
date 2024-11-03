@@ -63,7 +63,7 @@ class CarDetector:
             'num_workers': 16,
             'queue_size': 1024,
             'max_gpu_memory': 5.0,
-            'duplicate_distance': 2.0,
+            'duplicate_distance': 1.0,
             'frame_path': 'warsaw_central.shp',  # Default frame file name
             'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx'  # Default model file name
         }
