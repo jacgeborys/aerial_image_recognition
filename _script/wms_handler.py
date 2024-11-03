@@ -78,8 +78,8 @@ class WMSHandler:
                 target_height = int(height_meters / self.resolution)
                 
                 # Cap at reasonable size and maintain aspect ratio
-                min_size = 3200
-                max_size = 3000
+                min_size = 3840
+                max_size = 4096
                 if target_width > max_size or target_height > max_size:
                     scale = max_size / max(target_width, target_height)
                     target_width = int(target_width * scale)

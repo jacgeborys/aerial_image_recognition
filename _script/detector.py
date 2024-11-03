@@ -5,6 +5,7 @@ import geopandas as gpd
 import gc
 import traceback
 import torch
+from PIL import ImageEnhance
 
 from .wms_handler import WMSHandler
 from .gpu_handler import GPUHandler
@@ -56,7 +57,7 @@ class CarDetector:
         return {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
             'tile_size_meters': 64.0,
-            'confidence_threshold': 0.4,
+            'confidence_threshold': 0.3,
             'tile_overlap': 0.1,
             'batch_size': 1024,
             'checkpoint_interval': 1000,
@@ -354,3 +355,9 @@ class CarDetector:
         print(f"- Total detections: {len(results_gdf)}")
         print(f"- Average confidence: {results_gdf['confidence'].mean():.3f}")
         print(f"- Detection rate: {len(results_gdf) / total_time:.1f} detections/minute")
+
+    def preprocess_image(self, image):
+        """Add contrast enhancement for shadowed areas"""
+        enhancer = ImageEnhance.Contrast(image)
+        enhanced = enhancer.enhance(1.2)  # Slightly increase contrast
+        return enhanced
