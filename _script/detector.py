@@ -24,9 +24,15 @@ class CarDetector:
         # Setup paths
         self._setup_paths()
 
+        # Extract frame name for checkpoint files
+        self.frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
+
         # Initialize components
         self.gpu_monitor = GPUMonitor(log_interval=30)
-        self.checkpoint_manager = CheckpointManager(self.checkpoint_dir)
+        self.checkpoint_manager = CheckpointManager(
+            self.checkpoint_dir, 
+            prefix=self.frame_name
+        )
         self.results_manager = ResultsManager(duplicate_distance=self.config['duplicate_distance'])
 
         # Initialize handlers immediately
@@ -66,14 +72,16 @@ class CarDetector:
         self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
         self.model_dir = os.path.join(self.base_dir, "models")
         self.output_dir = os.path.join(self.base_dir, "gis", "shp", "detection_results")
+        self.frame_dir = os.path.join(self.base_dir, "gis", "shp", "frames")
 
-        for directory in [self.checkpoint_dir, self.model_dir, self.output_dir]:
+        # Create all necessary directories
+        for directory in [self.checkpoint_dir, self.model_dir, self.output_dir, self.frame_dir]:
             os.makedirs(directory, exist_ok=True)
 
         # Set specific paths
         self.model_path = os.path.join(self.model_dir, "car_aerial_detection_yolo7_ITCVD_deepness.onnx")
-        self.frame_path = os.path.join(self.base_dir, "gis", "shp", "frames", "warsaw.shp")
-        self.output_path = os.path.join(self.output_dir, "warsaw.geojson")
+        self.frame_path = os.path.join(self.frame_dir, "warsaw_central.shp")
+        self.output_path = os.path.join(self.output_dir, "warsaw_central.geojson")
 
     def _print_config(self):
         """Print current configuration"""

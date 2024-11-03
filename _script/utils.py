@@ -39,12 +39,13 @@ class TileGenerator:
 
 
 class CheckpointManager:
-    def __init__(self, checkpoint_dir):
+    def __init__(self, checkpoint_dir, prefix=''):
         self.checkpoint_dir = checkpoint_dir
-        self.state_file = os.path.join(checkpoint_dir, "processing_state.json")
-        self.data_file = os.path.join(checkpoint_dir, "latest_detections.geojson")
-        self.temp_state_file = os.path.join(checkpoint_dir, "temp_state.json")
-        self.temp_data_file = os.path.join(checkpoint_dir, "temp_detections.geojson")
+        self.prefix = f"{prefix}_" if prefix else ""
+        self.state_file = os.path.join(checkpoint_dir, f"{self.prefix}processing_state.json")
+        self.data_file = os.path.join(checkpoint_dir, f"{self.prefix}latest_detections.geojson")
+        self.temp_state_file = os.path.join(checkpoint_dir, f"{self.prefix}temp_state.json")
+        self.temp_data_file = os.path.join(checkpoint_dir, f"{self.prefix}temp_detections.geojson")
 
     def load_checkpoint(self):
         """Load last processing state and detections"""
