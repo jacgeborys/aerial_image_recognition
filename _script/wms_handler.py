@@ -7,6 +7,7 @@ from tqdm import tqdm
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from pyproj import Transformer
 
 
 class WMSHandler:
@@ -50,19 +51,19 @@ class WMSHandler:
             return False
 
     def get_single_image(self, bbox, max_retries=3, retry_delay=1):
-        """Fetch single image with adaptive retry"""
+        """Fetch single image with proper WGS84 coordinates"""
         current_delay = retry_delay
         
         for attempt in range(max_retries):
             try:
                 if self.wms is None and not self._connect():
                     time.sleep(current_delay)
-                    current_delay *= 2  # Exponential backoff
+                    current_delay *= 2
                     continue
 
                 img = self.wms.getmap(
                     layers=['Raster'],
-                    srs='EPSG:4326',
+                    srs='EPSG:4326',  # Use WGS84 for WMS request
                     bbox=bbox,
                     size=(640, 640),
                     format='image/jpeg',
@@ -74,77 +75,38 @@ class WMSHandler:
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(current_delay)
-                    current_delay *= 2  # Exponential backoff
+                    current_delay *= 2
                     self._connect()
                 else:
                     print(f"\rFailed after {max_retries} attempts: {str(e)}\r", end='')
         return None
 
-    def fetch_batch(self, tile_bboxes, progress_bar=None):
-        """Fetch batch with adaptive worker adjustment and backoff"""
-        results = []
-        failed_tiles = []
-        self.current_workers = min(25, self.num_workers)  # Reduced to match chunk size
-        max_batch_retries = 3
-        backoff_time = 1
+    def fetch_batch(self, tiles, progress_bar=None):
+        """Fetch a batch of tiles in parallel"""
+        if not tiles:
+            return []
 
-        for retry_attempt in range(max_batch_retries):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
-            current_tiles = failed_tiles if retry_attempt > 0 else tile_bboxes
+            results = []
             
-            if retry_attempt > 0:
-                print(f"\nRetrying {len(failed_tiles)} failed tiles with {self.current_workers} workers...")
-                time.sleep(backoff_time)
-                backoff_time *= 2
+            # Submit all tiles for processing
+            for bbox in tiles:
+                futures.append((executor.submit(self.get_single_image, bbox), bbox))
             
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=self.current_workers) as executor:
-                    # Process exactly 25 tiles at once
-                    chunk_size = 25
-                    for i in range(0, len(current_tiles), chunk_size):
-                        chunk = current_tiles[i:i + chunk_size]
-                        
-                        # 1 second break between chunks
-                        if i > 0:
-                            time.sleep(1.0)
-                        
-                        # Submit all tiles in this chunk at once
-                        for bbox in chunk:
-                            futures.append((executor.submit(self.get_single_image, bbox), bbox))
+            # Process results as they complete
+            for future, bbox in futures:
+                try:
+                    img = future.result(timeout=self.timeout)
+                    if img is not None:
+                        results.append((img, bbox))
+                    if progress_bar:
+                        progress_bar.update(1)
+                except concurrent.futures.TimeoutError:
+                    print(f"\rTimeout fetching tile {bbox}", end='', flush=True)
+                except Exception as e:
+                    print(f"\rError fetching tile {bbox}: {str(e)}", end='', flush=True)
 
-                        # Wait for this chunk to complete before moving to next
-                        failed_tiles = []
-                        chunk_futures = futures[-len(chunk):]
-                        for future, bbox in chunk_futures:
-                            try:
-                                img = future.result(timeout=self.timeout)
-                                if img is not None:
-                                    results.append((img, bbox))
-                                else:
-                                    failed_tiles.append(bbox)
-                            except concurrent.futures.TimeoutError:
-                                failed_tiles.append(bbox)
-                                self.current_workers = max(16, self.current_workers - 2)
-                            except Exception as e:
-                                failed_tiles.append(bbox)
-                                print(f"\rConnection error for tile {bbox}: {str(e)}", end='\r', flush=True)
-                            finally:
-                                if progress_bar and retry_attempt == 0:
-                                    progress_bar.update(1)
-
-                    if not failed_tiles:
-                        break
-
-            except Exception as e:
-                print(f"\rBatch error, retrying with fewer workers: {str(e)}")
-                self.current_workers = max(16, self.current_workers - 8)
-                time.sleep(backoff_time)
-                if self.current_workers <= 16:
-                    break
-
-        if failed_tiles:
-            print(f"\nPermanently failed to fetch {len(failed_tiles)} tiles after {max_batch_retries} attempts")
-            
         return results
 
     def fetch_all(self, all_tiles, batch_size=1024):

@@ -11,3 +11,11 @@
 *.shx
 *.dbf
 *.prj
+# Ignore Python cache and compiled files
+*.pyc
+__pycache__/
+*.log
+checkpoints/
+*.json
+*.csv
+
