@@ -202,7 +202,15 @@ class ResultsManager:
             print(f"- Duplicates removed: {duplicates_removed} ({(duplicates_removed/initial_count*100):.1f}%)")
             print(f"- Distance threshold: {self.duplicate_distance}m")
 
-            return filtered_gdf.to_dict('records')
+            # Convert back to the original detection format
+            return [
+                {
+                    'lon': point.x,
+                    'lat': point.y,
+                    'confidence': conf
+                }
+                for point, conf in zip(filtered_gdf.geometry, filtered_gdf.confidence)
+            ]
 
         except Exception as e:
             print(f"Deduplication error: {str(e)}")
@@ -230,9 +238,36 @@ class ResultsManager:
         return kept_indices
 
     def _create_geodataframe(self, detections):
-        """Convert detections to GeoDataFrame"""
-        points = [Point(d['lon'], d['lat']) for d in detections]
-        confs = [d['confidence'] for d in detections]
+        """Convert detections to GeoDataFrame with robust error handling"""
+        points = []
+        confs = []
+        
+        for i, d in enumerate(detections):
+            try:
+                if isinstance(d, dict):
+                    if 'geometry' in d and 'confidence' in d:
+                        # Handle case where detection is already in GeoDataFrame format
+                        points.append(d['geometry'])
+                        confs.append(d['confidence'])
+                    elif 'lon' in d and 'lat' in d:
+                        # Handle case where detection is in lon/lat format
+                        points.append(Point(d['lon'], d['lat']))
+                        confs.append(d.get('confidence', 0.0))
+                    else:
+                        print(f"Warning: Skipping invalid detection format at index {i}: {d}")
+                        continue
+                else:
+                    print(f"Warning: Skipping non-dictionary detection at index {i}: {d}")
+                    continue
+                
+            except Exception as e:
+                print(f"Warning: Error processing detection at index {i}: {str(e)}")
+                continue
+        
+        if not points:  # If no valid detections found
+            print("Warning: No valid detections found to create GeoDataFrame")
+            return gpd.GeoDataFrame(columns=['geometry', 'confidence'], crs="EPSG:4326")
+            
         return gpd.GeoDataFrame(
             {'geometry': points, 'confidence': confs},
             crs="EPSG:4326"

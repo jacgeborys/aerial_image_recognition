@@ -295,7 +295,7 @@ class CarDetector:
                     # Update progress and save results
                     if batch_detections:
                         all_detections.extend(batch_detections)
-                        if len(all_detections) > 100000:
+                        if len(all_detections) > 1000:
                             tqdm.write("\nRemoving duplicate detections...")
                             all_detections = self.results_manager.remove_duplicates(all_detections)
                             tqdm.write(f"Unique detections: {len(all_detections)}")
@@ -325,7 +325,7 @@ class CarDetector:
             # Process final results
             tqdm.write("\nProcessing complete! Saving final results...")
             final_detections = self.results_manager.remove_duplicates(all_detections)
-            results_gdf = gpd.GeoDataFrame(final_detections, crs="EPSG:4326")
+            results_gdf = self.checkpoint_manager._create_geodataframe(final_detections)
             results_gdf.to_file(self.output_path, driver='GeoJSON')
 
             self._print_final_stats(results_gdf, start_time)
