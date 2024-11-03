@@ -63,25 +63,64 @@ class CarDetector:
             'num_workers': 16,
             'queue_size': 1024,
             'max_gpu_memory': 5.0,
-            'duplicate_distance': 2.0
+            'duplicate_distance': 2.0,
+            'frame_path': 'warsaw_central.shp',  # Default frame file name
+            'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx'  # Default model file name
         }
 
     def _setup_paths(self):
         """Setup and create necessary directories"""
-        # Create directory structure
-        self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
+        # 1. Base directories
+        self.base_dir = os.path.abspath(self.base_dir)
+        
+        # 2. Main directory structure
+        self.gis_dir = os.path.join(self.base_dir, "gis")
         self.model_dir = os.path.join(self.base_dir, "models")
-        self.output_dir = os.path.join(self.base_dir, "gis", "shp", "detection_results")
-        self.frame_dir = os.path.join(self.base_dir, "gis", "shp", "frames")
-
-        # Create all necessary directories
-        for directory in [self.checkpoint_dir, self.model_dir, self.output_dir, self.frame_dir]:
+        
+        # 3. GIS subdirectories
+        self.frame_dir = os.path.join(self.gis_dir, "frames")
+        self.output_dir = os.path.join(self.gis_dir, "detection_results")
+        self.checkpoint_dir = os.path.join(self.gis_dir, "checkpoints")
+        self.preview_dir = os.path.join(self.gis_dir, "preview_tiles")
+        
+        # 4. Create all directories
+        directories = [
+            self.gis_dir,
+            self.model_dir,
+            self.frame_dir,
+            self.output_dir,
+            self.checkpoint_dir,
+            self.preview_dir
+        ]
+        
+        for directory in directories:
             os.makedirs(directory, exist_ok=True)
-
-        # Set specific paths
-        self.model_path = os.path.join(self.model_dir, "car_aerial_detection_yolo7_ITCVD_deepness.onnx")
-        self.frame_path = os.path.join(self.frame_dir, "warsaw_central.shp")
-        self.output_path = os.path.join(self.output_dir, "warsaw_central.geojson")
+        
+        # 5. Set input/output file paths
+        frame_name = self.config.get('frame_path', 'warsaw_central.shp')
+        model_name = self.config.get('model_path', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
+        
+        # Remove file extension for output naming
+        base_frame_name = os.path.splitext(frame_name)[0]
+        
+        self.frame_path = os.path.join(self.frame_dir, frame_name)
+        self.model_path = os.path.join(self.model_dir, model_name)
+        self.output_path = os.path.join(self.output_dir, f"{base_frame_name}.geojson")
+        
+        # 6. Print paths for debugging
+        if self.config.get('debug', False):
+            print("\nDirectory Structure:")
+            print(f"Base Dir: {self.base_dir}")
+            print(f"GIS Dir: {self.gis_dir}")
+            print(f"Model Dir: {self.model_dir}")
+            print(f"Frame Dir: {self.frame_dir}")
+            print(f"Output Dir: {self.output_dir}")
+            print(f"Checkpoint Dir: {self.checkpoint_dir}")
+            print(f"Preview Dir: {self.preview_dir}")
+            print(f"\nFile Paths:")
+            print(f"Frame: {self.frame_path}")
+            print(f"Model: {self.model_path}")
+            print(f"Output: {self.output_path}")
 
     def _print_config(self):
         """Print current configuration"""
@@ -186,6 +225,15 @@ class CarDetector:
                 self.config['tile_overlap']
             )
             total_tiles = len(tiles)
+            
+            # Generate and save tile preview
+            tqdm.write("\nGenerating tile preview...")
+            frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
+            self.wms_handler.preview_tiles(
+                tiles, 
+                self.preview_dir, 
+                prefix=frame_name
+            )
             
             # Get starting position and previous detections from checkpoint
             start_idx, previous_detections = self.checkpoint_manager.load_checkpoint()
