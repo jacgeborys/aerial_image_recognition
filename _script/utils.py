@@ -6,6 +6,8 @@ import math
 from pyproj import Transformer
 from shapely.ops import transform
 import time
+import numpy as np
+from datetime import datetime
 
 class TileGenerator:
     @staticmethod
@@ -169,34 +171,62 @@ class ResultsManager:
         self.duplicate_distance = duplicate_distance
 
     def remove_duplicates(self, detections):
-        """Remove duplicate detections"""
+        """Remove duplicate detections with optimized spatial indexing"""
         if not detections:
             return []
 
         try:
             initial_count = len(detections)
+            start_time = time.time()
+            
+            # Create GeoDataFrame
+            print(f"[{datetime.now()}] Creating GeoDataFrame...")
             gdf = self._create_geodataframe(detections)
 
             # Convert to UTM for distance calculations
-            transformer = Transformer.from_crs("EPSG:4326", "EPSG:32633", always_xy=True)
-            gdf['geometry'] = gdf['geometry'].apply(
-                lambda p: transform(transformer.transform, p)
-            )
+            print(f"[{datetime.now()}] Converting to UTM...")
+            utm_zone = int((gdf.geometry.x.mean() + 180) / 6) + 1
+            utm_epsg = f"326{utm_zone}"
+            gdf_utm = gdf.to_crs(utm_epsg)
 
             # Sort by confidence
-            gdf = gdf.sort_values('confidence', ascending=False)
-            kept_indices = self._find_unique_points(gdf)
+            gdf_utm = gdf_utm.sort_values('confidence', ascending=False)
 
-            # Convert back to WGS84
-            transformer = Transformer.from_crs("EPSG:32633", "EPSG:4326", always_xy=True)
-            filtered_gdf = gdf.loc[kept_indices]
-            filtered_gdf['geometry'] = filtered_gdf['geometry'].apply(
-                lambda p: transform(transformer.transform, p)
-            )
+            # Create spatial index
+            print(f"[{datetime.now()}] Creating spatial index...")
+            spatial_index = gdf_utm.sindex
+
+            # Initialize mask for points to keep
+            kept_mask = np.ones(len(gdf_utm), dtype=bool)
+
+            print(f"[{datetime.now()}] Finding duplicates...")
+            # Iterate through points in order of confidence
+            for idx in range(len(gdf_utm)):
+                if not kept_mask[idx]:
+                    continue
+                
+                # Get current point
+                point = gdf_utm.iloc[idx].geometry
+                
+                # Find potential neighbors using spatial index
+                nearby_candidates = list(spatial_index.query(point.buffer(self.duplicate_distance)))
+                
+                # Remove points that come later (lower confidence)
+                for neighbor_idx in nearby_candidates:
+                    if neighbor_idx > idx and kept_mask[neighbor_idx]:
+                        if point.distance(gdf_utm.iloc[neighbor_idx].geometry) < self.duplicate_distance:
+                            kept_mask[neighbor_idx] = False
+
+            # Filter and convert back to WGS84
+            print(f"[{datetime.now()}] Converting back to WGS84...")
+            filtered_gdf = gdf_utm[kept_mask].to_crs("EPSG:4326")
 
             final_count = len(filtered_gdf)
             duplicates_removed = initial_count - final_count
+            processing_time = time.time() - start_time
+            
             print(f"\nDuplicate Removal Stats:")
+            print(f"- Processing time: {processing_time:.1f}s")
             print(f"- Initial detections: {initial_count}")
             print(f"- Unique detections: {final_count}")
             print(f"- Duplicates removed: {duplicates_removed} ({(duplicates_removed/initial_count*100):.1f}%)")
@@ -215,27 +245,6 @@ class ResultsManager:
         except Exception as e:
             print(f"Deduplication error: {str(e)}")
             return detections
-
-    def _find_unique_points(self, gdf):
-        """Find unique points based on distance threshold"""
-        kept_indices = []
-        remaining_indices = set(gdf.index)
-
-        while remaining_indices:
-            # Get highest confidence point from remaining points
-            idx = max(remaining_indices, key=lambda i: gdf.loc[i, 'confidence'])
-            point = gdf.loc[idx, 'geometry']
-            
-            # Add to kept points
-            kept_indices.append(idx)
-            remaining_indices.remove(idx)
-            
-            # Remove all points within threshold distance
-            nearby = [i for i in remaining_indices 
-                     if point.distance(gdf.loc[i, 'geometry']) < self.duplicate_distance]
-            remaining_indices -= set(nearby)
-
-        return kept_indices
 
     def _create_geodataframe(self, detections):
         """Convert detections to GeoDataFrame with robust error handling"""

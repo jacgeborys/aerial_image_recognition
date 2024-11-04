@@ -6,6 +6,7 @@ import gc
 import traceback
 import torch
 from PIL import ImageEnhance
+from datetime import datetime
 
 from .wms_handler import WMSHandler
 from .gpu_handler import GPUHandler
@@ -65,7 +66,7 @@ class CarDetector:
             'queue_size': 1024,
             'max_gpu_memory': 5.0,
             'duplicate_distance': 1.0,
-            'frame_path': 'warsaw_central.shp',  # Default frame file name
+            'frame_path': 'warsaw.shp',  # Default frame file name
             'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx'  # Default model file name
         }
 
@@ -216,9 +217,11 @@ class CarDetector:
     def detect(self, interactive=True):
         """Main detection process with clear progress reporting"""
         try:
-            tqdm.write("\nStarting detection process...")
+            start_time = time.time()
+            tqdm.write(f"\n[{datetime.now()}] Starting detection process...")
             
             # Load frame and generate tiles
+            load_start = time.time()
             frame_gdf = gpd.read_file(self.frame_path)
             tiles = TileGenerator.generate_tiles(
                 frame_gdf.total_bounds,
@@ -226,15 +229,18 @@ class CarDetector:
                 self.config['tile_overlap']
             )
             total_tiles = len(tiles)
+            tqdm.write(f"[{datetime.now()}] Frame loaded and tiles generated in {time.time() - load_start:.1f}s")
+            tqdm.write(f"Total tiles to process: {total_tiles}")
             
             # Generate and save tile preview
-            tqdm.write("\nGenerating tile preview...")
+            preview_start = time.time()
             frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
             self.wms_handler.preview_tiles(
                 tiles, 
                 self.preview_dir, 
                 prefix=frame_name
             )
+            tqdm.write(f"[{datetime.now()}] Tile preview generated in {time.time() - preview_start:.1f}s")
             
             # Get starting position and previous detections from checkpoint
             start_idx, previous_detections = self.checkpoint_manager.load_checkpoint()
@@ -248,7 +254,6 @@ class CarDetector:
             # Initialize GPU monitor
             self.gpu_monitor = GPUMonitor(log_interval=30)
             self.gpu_monitor.start()
-            start_time = time.time()
 
             # Create main progress bar
             main_progress = tqdm(
@@ -261,60 +266,66 @@ class CarDetector:
 
             # Process tiles in batches
             for idx in range(start_idx, total_tiles, self.config['batch_size']):
+                batch_start = time.time()
                 batch_tiles = tiles[idx:min(idx + self.config['batch_size'], total_tiles)]
                 batch_size = len(batch_tiles)
 
-                if interactive:
-                    input("\nPress Enter to start processing next batch...")
-
-                # Status update using tqdm.write
-                tqdm.write(f"\nBatch Status:")
-                tqdm.write(f"- Processing tiles {idx} to {idx + batch_size} of {total_tiles}")
-                tqdm.write(f"- Current detections: {len(all_detections)}")
-                tqdm.write(f"- GPU Memory: {torch.cuda.memory_allocated() / 1e9:.1f}GB used")
-
-                # Process images with proper progress bar handling
-                with tqdm(
+                tqdm.write(f"\n[{datetime.now()}] Starting batch {idx//self.config['batch_size'] + 1}")
+                
+                # Create batch progress bar
+                batch_progress = tqdm(
                     total=batch_size,
-                    desc="Fetching Images",
+                    desc="Batch Progress",
                     position=1,
-                    leave=False,
-                    ncols=100
-                ) as batch_progress:
-                    # Use parallel fetching
-                    tqdm.write("\nFetching images from WMS...")
-                    images = self.wms_handler.fetch_batch(batch_tiles, batch_progress)
+                    leave=False
+                )
+                
+                # Fetch images
+                fetch_start = time.time()
+                images = self.wms_handler.fetch_batch(batch_tiles, batch_progress)
+                fetch_time = time.time() - fetch_start
+                tqdm.write(f"[{datetime.now()}] Images fetched in {fetch_time:.1f}s ({len(images)}/{batch_size} successful)")
 
-                tqdm.write(f"Retrieved {len(images)}/{batch_size} images successfully")
+                # Close batch progress bar
+                batch_progress.close()
 
                 if images:
                     # Process images
-                    tqdm.write("\nProcessing images through YOLO...")
+                    process_start = time.time()
                     batch_detections = self.process_images(images)
+                    process_time = time.time() - process_start
+                    tqdm.write(f"[{datetime.now()}] YOLO processing completed in {process_time:.1f}s")
                     tqdm.write(f"Found {len(batch_detections)} detections in this batch")
 
-                    # Update progress and save results
+                    # Update results
                     if batch_detections:
+                        update_start = time.time()
                         all_detections.extend(batch_detections)
-                        if len(all_detections) > 1000:
-                            tqdm.write("\nRemoving duplicate detections...")
+                        # Only remove duplicates every 10 batches or when detections exceed 10000
+                        if len(all_detections) > 20000 or (idx // self.config['batch_size']) % 10 == 0:
+                            tqdm.write(f"[{datetime.now()}] Starting duplicate removal...")
                             all_detections = self.results_manager.remove_duplicates(all_detections)
-                            tqdm.write(f"Unique detections: {len(all_detections)}")
+                        update_time = time.time() - update_start
+                        tqdm.write(f"[{datetime.now()}] Results updated in {update_time:.1f}s")
 
-                    processed_count += batch_size
-                    main_progress.update(batch_size)
-                    main_progress.set_postfix({
-                        "detections": len(all_detections),
-                        "batch": f"{len(batch_detections)} found"
-                    })
+                batch_time = time.time() - batch_start
+                tqdm.write(f"[{datetime.now()}] Batch completed in {batch_time:.1f}s")
+                tqdm.write(f"Speed: {batch_size/batch_time:.1f} tiles/second")
 
-                    # Save checkpoint
-                    if processed_count - last_checkpoint >= self.config['checkpoint_interval']:
-                        tqdm.write("\nSaving checkpoint...")
-                        self.checkpoint_manager.save_checkpoint(
-                            all_detections, processed_count, total_tiles
-                        )
-                        last_checkpoint = processed_count
+                # Save checkpoint
+                if processed_count - last_checkpoint >= self.config['checkpoint_interval']:
+                    tqdm.write("\nSaving checkpoint...")
+                    self.checkpoint_manager.save_checkpoint(
+                        all_detections, processed_count, total_tiles
+                    )
+                    last_checkpoint = processed_count
+
+                processed_count += batch_size
+                main_progress.update(batch_size)
+                main_progress.set_postfix({
+                    "detections": len(all_detections),
+                    "batch": f"{len(batch_detections)} found"
+                })
 
                 # Cleanup
                 del images
@@ -333,7 +344,7 @@ class CarDetector:
             return results_gdf
 
         except Exception as e:
-            tqdm.write(f"\nError in detection process: {str(e)}")
+            tqdm.write(f"\n[{datetime.now()}] Error in detection process: {str(e)}")
             traceback.print_exc()
             if 'all_detections' in locals() and 'processed_count' in locals():
                 tqdm.write("\nSaving checkpoint after error...")
