@@ -10,10 +10,10 @@ def main():
 
         # Custom configuration (optional)
         config = {
-            'batch_size': 512,
-            'num_workers': 32,
+            'batch_size': 256,
+            'num_workers': 16,
             'max_gpu_memory': 5.0,
-            'queue_size': 512
+            'queue_size': 256
         }
 
         # Initialize and run detector

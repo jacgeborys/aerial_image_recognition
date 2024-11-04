@@ -235,11 +235,11 @@ class CarDetector:
             # Generate and save tile preview
             preview_start = time.time()
             frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
-            self.wms_handler.preview_tiles(
-                tiles, 
-                self.preview_dir, 
-                prefix=frame_name
-            )
+            # self.wms_handler.preview_tiles(
+            #     tiles, 
+            #     self.preview_dir, 
+            #     prefix=frame_name
+            # )
             tqdm.write(f"[{datetime.now()}] Tile preview generated in {time.time() - preview_start:.1f}s")
             
             # Get starting position and previous detections from checkpoint

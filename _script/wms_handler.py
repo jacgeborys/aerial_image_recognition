@@ -11,6 +11,7 @@ from pyproj import Transformer
 import geopandas as gpd
 from shapely.geometry import box
 import os
+import random
 
 
 class WMSHandler:
@@ -24,22 +25,31 @@ class WMSHandler:
         self.session = self._create_session()
         self.min_workers = 8  # New: minimum workers
         self.current_workers = num_workers  # New: track current workers
+        self.stats = {
+            'attempts': 0,        # Total initial attempts
+            'retries': 0,        # Number of retry attempts
+            'successes': 0,      # Successful downloads
+            'total_failures': 0, # Tiles that failed all retries
+            'retry_time': 0      # Total time spent in retries
+        }
         if not self._connect():
             raise RuntimeError("Failed to establish WMS connection")
         print("WMS connection established successfully")
 
     def _create_session(self):
-        """Create session with retry strategy"""
+        """Create session with more conservative retry strategy"""
         session = requests.Session()
         retry_strategy = Retry(
-            total=5,
-            backoff_factor=1.0,
-            status_forcelist=[429, 500, 502, 503, 504]
+            total=3,                     # Reduced from 5
+            backoff_factor=2.0,          # Increased from 1.0
+            status_forcelist=[429, 500, 502, 503, 504],
+            respect_retry_after_header=True,
+            allowed_methods=["GET"]
         )
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
-            pool_connections=self.num_workers,
-            pool_maxsize=self.num_workers
+            pool_connections=min(self.num_workers, 16),  # Limit pool size
+            pool_maxsize=min(self.num_workers * 2, 32)   # Double pool size but with limit
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -54,16 +64,33 @@ class WMSHandler:
             print(f"WMS connection error: {str(e)}")
             return False
 
-    def get_single_image(self, bbox, max_retries=3, retry_delay=1):
+    def _print_stats(self):
+        """Print compact connection statistics with retry information"""
+        if self.stats['attempts'] > 0:
+            success_rate = (self.stats['successes'] / self.stats['attempts']) * 100
+            retry_rate = (self.stats['retries'] / self.stats['attempts']) * 100
+            avg_retry_time = self.stats['retry_time'] / (self.stats['retries'] or 1)
+            
+            print(f"\rWMS: {self.stats['successes']}/{self.stats['attempts']} OK ({success_rate:.1f}%) | "
+                  f"Retries: {self.stats['retries']} ({retry_rate:.1f}%) | "
+                  f"Avg retry: {avg_retry_time:.1f}s", end='')
+
+    def get_single_image(self, bbox, max_retries=2, retry_delay=2):
         """Fetch single image with proper WGS84 coordinates"""
+        start_time = time.time()
         current_delay = retry_delay
+        self.stats['attempts'] += 1
         
         for attempt in range(max_retries):
             try:
-                if self.wms is None and not self._connect():
-                    time.sleep(current_delay)
+                if attempt > 0:  # If this is a retry attempt
+                    self.stats['retries'] += 1
+                    # Calculate jitter here, before using it
+                    jitter = random.uniform(0, 0.1 * current_delay)
+                    time.sleep(current_delay + jitter)
                     current_delay *= 2
-                    continue
+                    if not self._connect():
+                        continue
 
                 # Calculate required size for target resolution
                 utm_zone = int((bbox[0] + 180) / 6) + 1
@@ -120,15 +147,16 @@ class WMSHandler:
                 
                 # Resize to 640x640 for model input
                 image = Image.open(io.BytesIO(img.read())).convert('RGB')
+                self.stats['successes'] += 1
                 return image.resize((640, 640), Image.Resampling.LANCZOS)
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(current_delay)
-                    current_delay *= 2
-                    self._connect()
-                else:
-                    print(f"\rFailed after {max_retries} attempts: {str(e)}\r", end='')
+                    continue
+        
+        self.stats['total_failures'] += 1
+        self.stats['retry_time'] += time.time() - start_time
+        self._print_stats()
         return None
 
     def fetch_batch(self, tiles, progress_bar=None):
