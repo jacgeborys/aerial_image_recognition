@@ -37,19 +37,20 @@ class WMSHandler:
         print("WMS connection established successfully")
 
     def _create_session(self):
-        """Create session with more conservative retry strategy"""
+        """Create session with optimized connection pooling"""
         session = requests.Session()
         retry_strategy = Retry(
-            total=3,                     # Reduced from 5
-            backoff_factor=2.0,          # Increased from 1.0
+            total=2,                      # Reduced from 3
+            backoff_factor=1.5,           # Reduced from 2.0 for faster retries
             status_forcelist=[429, 500, 502, 503, 504],
             respect_retry_after_header=True,
             allowed_methods=["GET"]
         )
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
-            pool_connections=min(self.num_workers, 16),  # Limit pool size
-            pool_maxsize=min(self.num_workers * 2, 32)   # Double pool size but with limit
+            pool_connections=self.num_workers,    # Match worker count exactly
+            pool_maxsize=self.num_workers * 2,    # Double for active connections
+            pool_block=False                      # Don't block on pool exhaustion
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -75,7 +76,7 @@ class WMSHandler:
                   f"Retries: {self.stats['retries']} ({retry_rate:.1f}%) | "
                   f"Avg retry: {avg_retry_time:.1f}s", end='')
 
-    def get_single_image(self, bbox, max_retries=2, retry_delay=2):
+    def get_single_image(self, bbox, max_retries=2, retry_delay=1.5):
         """Fetch single image with proper WGS84 coordinates"""
         start_time = time.time()
         current_delay = retry_delay
@@ -86,9 +87,9 @@ class WMSHandler:
                 if attempt > 0:  # If this is a retry attempt
                     self.stats['retries'] += 1
                     # Calculate jitter here, before using it
-                    jitter = random.uniform(0, 0.1 * current_delay)
+                    jitter = random.uniform(0, 0.05 * current_delay)
                     time.sleep(current_delay + jitter)
-                    current_delay *= 2
+                    current_delay *= 1.5
                     if not self._connect():
                         continue
 
@@ -160,26 +161,48 @@ class WMSHandler:
         return None
 
     def fetch_batch(self, tiles, progress_bar=None):
-        """Fetch a batch of tiles in parallel"""
+        """Fetch a batch of tiles with adaptive timeouts"""
         if not tiles:
             return []
 
+        # Track successful request times for adaptive timeout
+        request_times = []
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
             results = []
             
-            # Submit all tiles for processing
-            for bbox in tiles:
+            # Submit initial batch
+            for bbox in tiles[:self.num_workers]:
                 futures.append((executor.submit(self.get_single_image, bbox), bbox))
             
-            # Process results as they complete
+            # Process results and submit new tasks adaptively
+            tiles_iter = iter(tiles[self.num_workers:])
             for future, bbox in futures:
                 try:
+                    start_time = time.time()
                     img = future.result(timeout=self.timeout)
+                    request_time = time.time() - start_time
+                    
                     if img is not None:
                         results.append((img, bbox))
-                    if progress_bar:
-                        progress_bar.update(1)
+                        request_times.append(request_time)
+                        
+                        # Adjust timeout based on recent performance
+                        if len(request_times) >= 5:
+                            avg_time = sum(request_times[-5:]) / 5
+                            self.timeout = min(max(avg_time * 2, 15), 45)  # Between 15-45s
+                        
+                        # Submit next tile if available
+                        try:
+                            next_bbox = next(tiles_iter)
+                            futures.append((executor.submit(self.get_single_image, next_bbox), next_bbox))
+                        except StopIteration:
+                            pass
+                        
+                        if progress_bar:
+                            progress_bar.update(1)
+                        
                 except concurrent.futures.TimeoutError:
                     print(f"\rTimeout fetching tile {bbox}", end='', flush=True)
                 except Exception as e:

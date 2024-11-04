@@ -58,7 +58,7 @@ class CarDetector:
         return {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
             'tile_size_meters': 64.0,
-            'confidence_threshold': 0.3,
+            'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
             'batch_size': 1024,
             'checkpoint_interval': 1000,
