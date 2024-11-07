@@ -5,6 +5,7 @@ import cv2
 from PIL import Image
 import gc
 import tqdm
+import GPUtil
 
 
 class GPUHandler:
@@ -148,3 +149,9 @@ class GPUHandler:
         """Clean up GPU resources"""
         torch.cuda.empty_cache()
         gc.collect()
+
+    def _check_memory(self):
+        gpu = GPUtil.getGPUs()[0]
+        if gpu.memoryUsed > self.max_gpu_memory * 1024:
+            torch.cuda.empty_cache()
+            gc.collect()

@@ -12,7 +12,7 @@ def main():
         config = {
             'batch_size': 1024,
             'num_workers': 16,
-            'max_gpu_memory': 8.0,
+            'max_gpu_memory': 5.0,
             'queue_size': 2048
         }
 

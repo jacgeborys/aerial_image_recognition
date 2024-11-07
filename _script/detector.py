@@ -5,13 +5,14 @@ import geopandas as gpd
 import gc
 import traceback
 import torch
-from PIL import ImageEnhance
+from PIL import ImageEnhance, ImageDraw
 from datetime import datetime
 
 from .wms_handler import WMSHandler
 from .gpu_handler import GPUHandler
 from .utils import TileGenerator, CheckpointManager, ResultsManager
 from .monitors import GPUMonitor
+from .wmts_handler import WMTSHandler
 
 
 class CarDetector:
@@ -38,10 +39,10 @@ class CarDetector:
         self.results_manager = ResultsManager(duplicate_distance=self.config['duplicate_distance'])
 
         # Initialize handlers immediately
-        print("\nInitializing WMS connection and GPU...")
-        self.wms_handler = WMSHandler(
-            self.config['wms_url'],
-            num_workers=self.config['num_workers']
+        print("\nInitializing WMTS connection and GPU...")
+        self.wmts_handler = WMTSHandler(
+            num_workers=self.config['num_workers'],
+            timeout=30
         )
         self.gpu_handler = GPUHandler(
             self.model_path,
@@ -57,16 +58,16 @@ class CarDetector:
         """Get default configuration"""
         return {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
-            'tile_size_meters': 64.0,
+            'tile_size_meters': 32.0,
             'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
             'batch_size': 1024,
             'checkpoint_interval': 1000,
             'num_workers': 16,
             'queue_size': 1024,
-            'max_gpu_memory': 5.0,
+            'max_gpu_memory': 5.5,
             'duplicate_distance': 1.0,
-            'frame_path': 'warsaw.shp',  # Default frame file name
+            'frame_path': 'warsaw_central.shp',  # Default frame file name
             'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx'  # Default model file name
         }
 
@@ -134,19 +135,21 @@ class CarDetector:
         print(f"- Confidence threshold: {self.config['confidence_threshold']}")
 
     def _initialize_handlers(self):
-        """Initialize WMS and GPU handlers"""
-        if not self.wms_handler:
-            self.wms_handler = WMSHandler(
-                self.config['wms_url'],
-                num_workers=self.config['num_workers']
-            )
-
-        if not self.gpu_handler:
-            self.gpu_handler = GPUHandler(
-                self.model_path,
-                max_gpu_memory=self.config['max_gpu_memory'],
-                confidence_threshold=self.config['confidence_threshold']
-            )
+        """Initialize handlers"""
+        print("\nInitializing WMTS connection and GPU...")
+        
+        # Initialize WMTS handler
+        self.wmts_handler = WMTSHandler(
+            num_workers=self.config['num_workers'],
+            timeout=30
+        )
+        
+        # Initialize GPU handler
+        self.gpu_handler = GPUHandler(
+            model_path=os.path.join(self.model_dir, "model.onnx"),
+            confidence_threshold=self.config['confidence_threshold'],
+            max_memory_gb=self.config['max_gpu_memory']
+        )
 
     def process_images(self, image_batch, progress_bar=None):
         """Process a batch of images through GPU"""
@@ -167,53 +170,60 @@ class CarDetector:
             return []
 
     def fetch_images(self, tile_batch, progress_bar=None):
-        """Fetch a batch of images from WMS"""
+        """Fetch a batch of images from WMTS"""
         try:
-            # Ensure WMS handler is initialized
-            if not self.wms_handler:
+            # Ensure WMTS handler is initialized
+            if not self.wmts_handler:
                 self._initialize_handlers()
 
-            # Fetch images
-            return self.wms_handler.fetch_batch(tile_batch, progress_bar)
+            # Fetch images using WMTS
+            return self.wmts_handler.fetch_batch(tile_batch, progress_bar)
         except Exception as e:
             print(f"\nError fetching images: {str(e)}")
             return []
 
-    def _process_batch(self, batch_tiles):
-        """Process a single batch with clear status reporting"""
-        batch_size = len(batch_tiles)
+    def _process_batch(self, batch_tiles, batch_idx, batch_progress=None):
+        """Process a batch of tiles"""
+        try:
+            batch_start = time.time()
+            images_and_bboxes = []
+            processed_count = 0
+            
+            # Process each tile
+            for tile_idx, bbox in enumerate(batch_tiles):
+                try:
+                    # Use WMTS handler instead of WMS
+                    img, actual_bbox = self.wmts_handler.get_tile_for_bbox(bbox)
+                    if img is not None:
+                        images_and_bboxes.append((img, actual_bbox))
+                        processed_count += 1
+                    
+                    if batch_progress:
+                        batch_progress.update(1)
+                        
+                except Exception as e:
+                    print(f"Error processing tile {tile_idx}: {str(e)}")
+                    continue
+            
+            batch_time = time.time() - batch_start
+            if batch_time > 0:  # Prevent division by zero
+                speed = processed_count / batch_time
+                print(f"Successfully processed {processed_count}/{len(batch_tiles)} tiles in batch {batch_idx}")
+                print(f"Batch speed: {speed:.1f} tiles/second")
+            
+            # Process detections if we have images
+            if images_and_bboxes:
+                images = [img for img, _ in images_and_bboxes]
+                bboxes = [bbox for _, bbox in images_and_bboxes]
+                detections = self.process_images(images, bboxes)
+                return detections
+            
+            return []
+            
+        except Exception as e:
+            print(f"Batch processing error: {str(e)}")
+            return []
 
-        # 1. Fetch images
-        print("\n" + "=" * 50)
-        print(f"FETCHING IMAGES: Batch of {batch_size} tiles")
-        print("=" * 50)
-
-        with tqdm(
-            total=batch_size,
-            desc="Downloading",
-            position=1,
-            leave=False
-        ) as fetch_progress:
-            images = self.wms_handler.fetch_batch(batch_tiles, fetch_progress)
-
-        print(f"\nFetch complete: {len(images)}/{batch_size} images downloaded")
-
-        # 2. Process through YOLO
-        if images:
-            print("\n" + "=" * 50)
-            print("RUNNING YOLO DETECTION")
-            print("=" * 50)
-
-            # Use queue_size from config, defaulting to batch_size if not specified
-            queue_size = self.config.get('queue_size', self.config['batch_size'])
-            batch_detections = self.gpu_handler.process_batch(
-                images,
-                queue_size=queue_size
-            )
-            print(f"Detection complete: Found {len(batch_detections)} cars")
-            return images, batch_detections
-
-        return [], []
     def detect(self, interactive=True):
         """Main detection process with clear progress reporting"""
         try:
@@ -232,131 +242,41 @@ class CarDetector:
             tqdm.write(f"[{datetime.now()}] Frame loaded and tiles generated in {time.time() - load_start:.1f}s")
             tqdm.write(f"Total tiles to process: {total_tiles}")
             
-            # Generate and save tile preview
-            preview_start = time.time()
-            frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
-            # self.wms_handler.preview_tiles(
-            #     tiles, 
-            #     self.preview_dir, 
-            #     prefix=frame_name
-            # )
-            tqdm.write(f"[{datetime.now()}] Tile preview generated in {time.time() - preview_start:.1f}s")
+            # Initialize results list
+            all_detections = []
             
-            # Get starting position and previous detections from checkpoint
-            start_idx, previous_detections = self.checkpoint_manager.load_checkpoint()
-            processed_count = start_idx
-            all_detections = previous_detections.copy()  # Start with previous detections
-            last_checkpoint = processed_count
-            
-            if start_idx > 0:
-                tqdm.write(f"\nResuming from checkpoint at tile {start_idx} of {total_tiles}")
-
-            # Initialize GPU monitor
-            self.gpu_monitor = GPUMonitor(log_interval=30)
-            self.gpu_monitor.start()
-
-            # Create main progress bar
-            main_progress = tqdm(
-                total=total_tiles,
-                initial=processed_count,
-                desc="Overall Progress",
-                position=0,
-                leave=True
-            )
-
             # Process tiles in batches
-            for idx in range(start_idx, total_tiles, self.config['batch_size']):
+            for idx in range(0, total_tiles, self.config['batch_size']):
                 batch_start = time.time()
                 batch_tiles = tiles[idx:min(idx + self.config['batch_size'], total_tiles)]
-                batch_size = len(batch_tiles)
-
-                tqdm.write(f"\n[{datetime.now()}] Starting batch {idx//self.config['batch_size'] + 1}")
                 
-                # Create batch progress bar
-                batch_progress = tqdm(
-                    total=batch_size,
-                    desc="Batch Progress",
-                    position=1,
-                    leave=False
+                batch_num = idx//self.config['batch_size'] + 1
+                tqdm.write(f"\n[{datetime.now()}] Starting batch {batch_num}")
+                
+                # Process batch
+                batch_detections = self._process_batch(
+                    batch_tiles, 
+                    batch_num
                 )
                 
-                # Fetch images
-                fetch_start = time.time()
-                images = self.wms_handler.fetch_batch(batch_tiles, batch_progress)
-                fetch_time = time.time() - fetch_start
-                tqdm.write(f"[{datetime.now()}] Images fetched in {fetch_time:.1f}s ({len(images)}/{batch_size} successful)")
-
-                # Close batch progress bar
-                batch_progress.close()
-
-                if images:
-                    # Process images
-                    process_start = time.time()
-                    batch_detections = self.process_images(images)
-                    process_time = time.time() - process_start
-                    tqdm.write(f"[{datetime.now()}] YOLO processing completed in {process_time:.1f}s")
-                    tqdm.write(f"Found {len(batch_detections)} detections in this batch")
-
-                    # Update results
-                    if batch_detections:
-                        update_start = time.time()
-                        all_detections.extend(batch_detections)
-                        # Only remove duplicates every 10 batches or when detections exceed 10000
-                        if len(all_detections) > 20000 or (idx // self.config['batch_size']) % 10 == 0:
-                            tqdm.write(f"[{datetime.now()}] Starting duplicate removal...")
-                            all_detections = self.results_manager.remove_duplicates(all_detections)
-                        update_time = time.time() - update_start
-                        tqdm.write(f"[{datetime.now()}] Results updated in {update_time:.1f}s")
-
-                batch_time = time.time() - batch_start
-                tqdm.write(f"[{datetime.now()}] Batch completed in {batch_time:.1f}s")
-                tqdm.write(f"Speed: {batch_size/batch_time:.1f} tiles/second")
-
+                # Extend detections list
+                if batch_detections:
+                    all_detections.extend(batch_detections)
+                
                 # Save checkpoint
-                if processed_count - last_checkpoint >= self.config['checkpoint_interval']:
-                    tqdm.write("\nSaving checkpoint...")
-                    self.checkpoint_manager.save_checkpoint(
-                        all_detections, processed_count, total_tiles
-                    )
-                    last_checkpoint = processed_count
-
-                processed_count += batch_size
-                main_progress.update(batch_size)
-                main_progress.set_postfix({
-                    "detections": len(all_detections),
-                    "batch": f"{len(batch_detections)} found"
-                })
-
-                # Cleanup
-                del images
-                gc.collect()
-                torch.cuda.empty_cache()
-
-            main_progress.close()
-
-            # Process final results
-            tqdm.write("\nProcessing complete! Saving final results...")
-            final_detections = self.results_manager.remove_duplicates(all_detections)
-            results_gdf = self.checkpoint_manager._create_geodataframe(final_detections)
-            results_gdf.to_file(self.output_path, driver='GeoJSON')
-
-            self._print_final_stats(results_gdf, start_time)
-            return results_gdf
-
-        except Exception as e:
-            tqdm.write(f"\n[{datetime.now()}] Error in detection process: {str(e)}")
-            traceback.print_exc()
-            if 'all_detections' in locals() and 'processed_count' in locals():
-                tqdm.write("\nSaving checkpoint after error...")
-                self.checkpoint_manager.save_checkpoint(
-                    all_detections, processed_count, total_tiles
-                )
+                self.checkpoint_manager.save_checkpoint(all_detections, idx + len(batch_tiles), total_tiles)
+            
+            tqdm.write("\nProcessing complete!")
+            
+            # Return results if we have any
+            if all_detections:
+                return gpd.GeoDataFrame(all_detections)
             return None
-
-        finally:
-            if hasattr(self, 'gpu_handler'):
-                self.gpu_handler.cleanup()
-            self.gpu_monitor.stop()
+            
+        except Exception as e:
+            print(f"Error in detection process: {str(e)}")
+            traceback.print_exc()
+            return None
 
     def _print_final_stats(self, results_gdf, start_time):
         """Print final processing statistics"""
@@ -372,3 +292,21 @@ class CarDetector:
         enhancer = ImageEnhance.Contrast(image)
         enhanced = enhancer.enhance(1.2)  # Slightly increase contrast
         return enhanced
+
+    def verify_tile_location(self, bbox, img, save_path):
+        """Save a tile with its coordinates for verification"""
+        try:
+            # Create a copy of the image to draw on
+            img_draw = img.copy()
+            draw = ImageDraw.Draw(img_draw)
+            
+            # Add coordinates and bbox info
+            text = f"Bbox: {bbox}\nCenter: {(bbox[0]+bbox[2])/2:.6f}, {(bbox[1]+bbox[3])/2:.6f}"
+            draw.text((10, 10), text, fill='red')
+            
+            # Save the annotated image
+            img_draw.save(save_path)
+            return True
+        except Exception as e:
+            print(f"Error saving verification tile: {str(e)}")
+            return False
