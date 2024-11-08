@@ -18,11 +18,11 @@ def main():
 
         # Initialize and run detector
         detector = CarDetector(base_dir, config)
-        results = detector.detect(interactive=False)  # Set to False for automatic processing
+        results = detector.detect(interactive=False)
 
-        if results is not None and not results.empty:
+        if results is not None and len(results) > 0:
             print("\nDetection completed successfully!")
-            print(f"Results saved to: {detector.output_path}")
+            print(f"Results saved to: {os.path.join(base_dir, 'output', 'detections_results.geojson')}")
             return results
         else:
             print("\nNo results generated")

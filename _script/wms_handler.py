@@ -142,7 +142,7 @@ class WMSHandler:
             # Process results
             for future, bbox in futures:
                 try:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     img = future.result(timeout=self.timeout)
                     if img is not None:
                         results.append((img, bbox))

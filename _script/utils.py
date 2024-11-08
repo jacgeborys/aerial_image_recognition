@@ -142,7 +142,7 @@ class CheckpointManager:
             crs="EPSG:4326"
         )
 class ResultsManager:
-    def __init__(self, output_dir, prefix="detections", duplicate_distance=5):
+    def __init__(self, output_dir, prefix="detections", duplicate_distance=1):
         """Initialize with output path and duplicate distance"""
         self.duplicate_distance = duplicate_distance  # meters
         self.output_dir = output_dir
