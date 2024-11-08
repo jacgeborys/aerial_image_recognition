@@ -2,7 +2,7 @@ import torch
 import onnxruntime as ort
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageEnhance
 import gc
 import tqdm
 
@@ -55,7 +55,33 @@ class GPUHandler:
         )
 
     def preprocess_image(self, img):
-        """Convert image to tensor"""
+        """Process image with multiple contrast/brightness variations"""
+        variations = []
+        
+        # Original image
+        variations.append(self._prepare_tensor(img))
+        
+        # Enhance shadows (increase brightness)
+        enhancer = ImageEnhance.Brightness(img)
+        bright_img = enhancer.enhance(1.3)
+        variations.append(self._prepare_tensor(bright_img))
+        
+        # Enhance contrast for better edge detection
+        enhancer = ImageEnhance.Contrast(img)
+        contrast_img = enhancer.enhance(1.4)
+        variations.append(self._prepare_tensor(contrast_img))
+        
+        # Enhance dark areas
+        enhancer = ImageEnhance.Brightness(img)
+        dark_img = enhancer.enhance(0.7)
+        contrast_enhancer = ImageEnhance.Contrast(dark_img)
+        dark_contrast_img = contrast_enhancer.enhance(1.5)
+        variations.append(self._prepare_tensor(dark_contrast_img))
+        
+        return variations
+
+    def _prepare_tensor(self, img):
+        """Convert single image to tensor"""
         img_array = np.array(img)
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
         tensor = torch.from_numpy(img_bgr).cuda()
@@ -105,43 +131,54 @@ class GPUHandler:
             gc.collect()
 
     def _process_tensors(self, tensor_batch):
-        """Run inference on tensor batch"""
+        """Run inference on tensor batch with variations"""
         detections = []
         try:
-            for tensor, bbox in tensor_batch:
-                # Add batch dimension and run inference
-                input_tensor = tensor.unsqueeze(0).cpu().numpy()
-                outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})
-
-                boxes = outputs[0][0]
-                conf_mask = boxes[:, 4] > self.confidence_threshold
-                boxes = boxes[conf_mask]
-
-                if len(boxes) > 0:
-                    boxes_tensor = torch.from_numpy(boxes).cuda()
+            for tensor_variations, bbox in tensor_batch:
+                batch_boxes = []
+                
+                # Process each variation
+                for tensor in tensor_variations:
+                    input_tensor = tensor.unsqueeze(0).cpu().numpy()
+                    outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})
+                    boxes = outputs[0][0]
+                    
+                    # Apply confidence threshold
+                    conf_mask = boxes[:, 4] > self.confidence_threshold
+                    filtered_boxes = boxes[conf_mask]
+                    
+                    if len(filtered_boxes) > 0:
+                        batch_boxes.append(filtered_boxes)
+                
+                # Combine detections from all variations
+                if batch_boxes:
+                    combined_boxes = np.concatenate(batch_boxes, axis=0)
+                    boxes_tensor = torch.from_numpy(combined_boxes).cuda()
+                    
+                    # Convert to coordinates
                     centers = boxes_tensor[:, :2] / 640
-
                     lon_offset = bbox[2] - bbox[0]
                     lat_offset = bbox[3] - bbox[1]
-
+                    
                     lons = bbox[0] + (centers[:, 0] * lon_offset)
                     lats = bbox[3] - (centers[:, 1] * lat_offset)
                     confs = boxes_tensor[:, 4]
-
+                    
+                    # Add all detections
                     for lon, lat, conf in zip(lons.cpu().numpy(),
-                                              lats.cpu().numpy(),
-                                              confs.cpu().numpy()):
+                                            lats.cpu().numpy(),
+                                            confs.cpu().numpy()):
                         detections.append({
                             'lon': lon,
                             'lat': lat,
                             'confidence': float(conf)
                         })
-
+                    
                     del boxes_tensor
-
+                    
         except Exception as e:
             print(f"Error processing tensor batch: {str(e)}")
-
+        
         return detections
 
     def cleanup(self):
