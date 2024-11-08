@@ -55,7 +55,19 @@ class GPUHandler:
         )
 
     def preprocess_image(self, img):
-        """Process image with multiple contrast/brightness variations"""
+        """Process image with multiple contrast/brightness variations and occlusion handling"""
+        variations = []
+        
+        # Original image processing (keep existing variations)
+        variations.extend(self._get_lighting_variations(img))
+        
+        # Add occlusion-focused variations
+        variations.extend(self._get_occlusion_variations(img))
+        
+        return variations
+
+    def _get_lighting_variations(self, img):
+        """Get variations for different lighting conditions"""
         variations = []
         
         # Original image
@@ -77,6 +89,68 @@ class GPUHandler:
         contrast_enhancer = ImageEnhance.Contrast(dark_img)
         dark_contrast_img = contrast_enhancer.enhance(1.5)
         variations.append(self._prepare_tensor(dark_contrast_img))
+        
+        return variations
+
+    def _get_occlusion_variations(self, img):
+        """Get variations to handle occlusions"""
+        variations = []
+        
+        # Convert to numpy array for OpenCV operations
+        img_array = np.array(img)
+        
+        # 1. Local Adaptive Thresholding
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        adaptive_thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
+        adaptive_img = cv2.cvtColor(adaptive_thresh, cv2.COLOR_GRAY2RGB)
+        variations.append(self._prepare_tensor(Image.fromarray(adaptive_img)))
+        
+        # 2. Edge Enhancement
+        edges = cv2.Canny(img_array, 100, 200)
+        edge_enhanced = img_array.copy()
+        edge_enhanced[edges > 0] = [255, 255, 255]
+        variations.append(self._prepare_tensor(Image.fromarray(edge_enhanced)))
+        
+        # 3. Shadow Removal
+        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        l = clahe.apply(l)
+        enhanced_lab = cv2.merge([l, a, b])
+        shadow_removed = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+        variations.append(self._prepare_tensor(Image.fromarray(shadow_removed)))
+        
+        # 4. Color-based Segmentation
+        hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
+        # Common car colors (adjust ranges as needed)
+        color_masks = []
+        color_ranges = [
+            # Dark colors (black, dark gray)
+            ([0, 0, 0], [180, 255, 50]),
+            # Light colors (white, silver)
+            ([0, 0, 200], [180, 30, 255]),
+            # Red colors
+            ([0, 70, 50], [10, 255, 255]),
+            ([170, 70, 50], [180, 255, 255]),
+            # Blue colors
+            ([100, 50, 50], [130, 255, 255])
+        ]
+        
+        for lower, upper in color_ranges:
+            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+            color_masks.append(mask)
+        
+        combined_mask = np.zeros_like(color_masks[0])
+        for mask in color_masks:
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+        
+        # Apply color mask to original image
+        color_filtered = img_array.copy()
+        color_filtered[combined_mask == 0] = [128, 128, 128]  # Gray out non-car-color areas
+        variations.append(self._prepare_tensor(Image.fromarray(color_filtered)))
         
         return variations
 
@@ -131,17 +205,21 @@ class GPUHandler:
             gc.collect()
 
     def _process_tensors(self, tensor_batch):
-        """Run inference on tensor batch with variations"""
+        """Run inference on tensor batch with variations and confidence adjustment"""
         detections = []
         try:
             for tensor_variations, bbox in tensor_batch:
                 batch_boxes = []
                 
                 # Process each variation
-                for tensor in tensor_variations:
+                for i, tensor in enumerate(tensor_variations):
                     input_tensor = tensor.unsqueeze(0).cpu().numpy()
                     outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})
                     boxes = outputs[0][0]
+                    
+                    # Adjust confidence based on variation type
+                    conf_adjustment = self._get_confidence_adjustment(i, len(tensor_variations))
+                    boxes[:, 4] *= conf_adjustment
                     
                     # Apply confidence threshold
                     conf_mask = boxes[:, 4] > self.confidence_threshold
@@ -180,6 +258,23 @@ class GPUHandler:
             print(f"Error processing tensor batch: {str(e)}")
         
         return detections
+
+    def _get_confidence_adjustment(self, variation_index, total_variations):
+        """Adjust confidence scores based on variation type"""
+        # First variations are the lighting variations (original approach)
+        if variation_index < 4:
+            return 1.0
+        
+        # Subsequent variations are occlusion-handling variations
+        # We might want to slightly reduce their confidence
+        occlusion_adjustments = {
+            4: 0.95,  # Adaptive threshold
+            5: 0.90,  # Edge enhanced
+            6: 0.95,  # Shadow removed
+            7: 0.85   # Color filtered
+        }
+        
+        return occlusion_adjustments.get(variation_index, 0.85)
 
     def cleanup(self):
         """Clean up GPU resources"""
