@@ -47,15 +47,8 @@ class CarDetector:
             raise
 
     def _load_config(self, custom_config=None):
-        """Load configuration with custom overrides"""
-        config = self._get_default_config()
-        if custom_config:
-            config.update(custom_config)
-        return config
-
-    def _get_default_config(self):
-        """Get default configuration"""
-        return {
+        """Load configuration with defaults and custom overrides"""
+        default_config = {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
             'tile_size_meters': 64.0,
             'confidence_threshold': 0.4,
@@ -65,62 +58,13 @@ class CarDetector:
             'max_gpu_memory': 5.0,
             'duplicate_distance': 1.0,
             'frame_path': 'warsaw_central.shp',
-            'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx'
+            'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx',
+            'num_workers': 25,
+            'queue_size': 64
         }
-
-    def _setup_paths(self):
-        """Setup and create necessary directories"""
-        # 1. Base directories
-        self.base_dir = os.path.abspath(self.base_dir)
-        
-        # 2. Main directory structure
-        self.gis_dir = os.path.join(self.base_dir, "gis")
-        self.model_dir = os.path.join(self.base_dir, "models")
-        
-        # 3. GIS subdirectories
-        self.frame_dir = os.path.join(self.gis_dir, "frames")
-        self.output_dir = os.path.join(self.gis_dir, "detection_results")
-        self.checkpoint_dir = os.path.join(self.gis_dir, "checkpoints")
-        self.preview_dir = os.path.join(self.gis_dir, "preview_tiles")
-        
-        # 4. Create all directories
-        directories = [
-            self.gis_dir,
-            self.model_dir,
-            self.frame_dir,
-            self.output_dir,
-            self.checkpoint_dir,
-            self.preview_dir
-        ]
-        
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
-        
-        # 5. Set input/output file paths
-        frame_name = self.config.get('frame_path', 'warsaw_central.shp')
-        model_name = self.config.get('model_path', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
-        
-        # Remove file extension for output naming
-        base_frame_name = os.path.splitext(frame_name)[0]
-        
-        self.frame_path = os.path.join(self.frame_dir, frame_name)
-        self.model_path = os.path.join(self.model_dir, model_name)
-        self.output_path = os.path.join(self.output_dir, f"{base_frame_name}.geojson")
-        
-        # 6. Print paths for debugging
-        if self.config.get('debug', False):
-            print("\nDirectory Structure:")
-            print(f"Base Dir: {self.base_dir}")
-            print(f"GIS Dir: {self.gis_dir}")
-            print(f"Model Dir: {self.model_dir}")
-            print(f"Frame Dir: {self.frame_dir}")
-            print(f"Output Dir: {self.output_dir}")
-            print(f"Checkpoint Dir: {self.checkpoint_dir}")
-            print(f"Preview Dir: {self.preview_dir}")
-            print(f"\nFile Paths:")
-            print(f"Frame: {self.frame_path}")
-            print(f"Model: {self.model_path}")
-            print(f"Output: {self.output_path}")
+        if custom_config:
+            default_config.update(custom_config)
+        return default_config
 
     def _print_config(self):
         """Print current configuration"""
@@ -129,24 +73,6 @@ class CarDetector:
         print(f"- Batch size: {self.config['batch_size']}")
         print(f"- GPU memory limit: {self.config['max_gpu_memory']}GB")
         print(f"- Confidence threshold: {self.config['confidence_threshold']}")
-
-    def _initialize_handlers(self):
-        """Initialize WMS and GPU handlers"""
-        try:
-            if not self.wms_handler:
-                # Initialize WMS handler with only the required parameters
-                wms_url = self.config.get('wms_url', 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution')
-                self.wms_handler = WMSHandler(wms_url)  # Only pass the URL
-
-            if not self.gpu_handler:
-                self.gpu_handler = GPUHandler(
-                    model_path=self.model_path,
-                    confidence_threshold=self.config.get('confidence_threshold', 0.3),
-                    max_gpu_memory=self.config.get('max_gpu_memory', 4.0)
-                )
-        except Exception as e:
-            print(f"Error initializing handlers: {str(e)}")
-            raise
 
     def process_images(self, image_batch, progress_bar=None):
         """Process a batch of images through GPU"""
@@ -298,3 +224,21 @@ class CarDetector:
         enhancer = ImageEnhance.Contrast(image)
         enhanced = enhancer.enhance(1.2)  # Slightly increase contrast
         return enhanced
+
+    def _initialize_handlers(self):
+        """Initialize WMS and GPU handlers"""
+        try:
+            if not self.wms_handler:
+                # Initialize WMS handler with only the required parameters
+                wms_url = self.config.get('wms_url', 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution')
+                self.wms_handler = WMSHandler(wms_url)  # Only pass the URL
+
+            if not self.gpu_handler:
+                self.gpu_handler = GPUHandler(
+                    model_path=self.model_path,
+                    confidence_threshold=self.config.get('confidence_threshold', 0.3),
+                    max_gpu_memory=self.config.get('max_gpu_memory', 4.0)
+                )
+        except Exception as e:
+            print(f"Error initializing handlers: {str(e)}")
+            raise

@@ -10,6 +10,8 @@ import numpy as np
 from datetime import datetime
 import pickle
 
+__all__ = ['TileGenerator', 'CheckpointManager', 'ResultsManager', 'create_geodataframe']
+
 class TileGenerator:
     @staticmethod
     def _get_utm_zone(lon, lat):
@@ -141,6 +143,40 @@ class CheckpointManager:
             {'geometry': points, 'confidence': confs},
             crs="EPSG:4326"
         )
+
+def create_geodataframe(detections):
+    """Convert detections to GeoDataFrame with robust error handling"""
+    points = []
+    confs = []
+    
+    for i, d in enumerate(detections):
+        try:
+            if isinstance(d, dict):
+                if 'geometry' in d and 'confidence' in d:
+                    points.append(d['geometry'])
+                    confs.append(d['confidence'])
+                elif 'lon' in d and 'lat' in d:
+                    points.append(Point(d['lon'], d['lat']))
+                    confs.append(d.get('confidence', 0.0))
+                else:
+                    print(f"Warning: Skipping invalid detection format at index {i}: {d}")
+                    continue
+            else:
+                print(f"Warning: Skipping non-dictionary detection at index {i}: {d}")
+                continue
+            
+        except Exception as e:
+            print(f"Warning: Error processing detection at index {i}: {str(e)}")
+            continue
+    
+    if not points:
+        return gpd.GeoDataFrame(columns=['geometry', 'confidence'], crs="EPSG:4326")
+        
+    return gpd.GeoDataFrame(
+        {'geometry': points, 'confidence': confs},
+        crs="EPSG:4326"
+    )
+
 class ResultsManager:
     def __init__(self, output_dir, prefix="detections", duplicate_distance=1):
         """Initialize with output path and duplicate distance"""
@@ -151,6 +187,27 @@ class ResultsManager:
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
 
+    def process_results(self, detections):
+        """Process final detection results"""
+        if not detections:
+            print("No detections to process")
+            return []
+            
+        print(f"\n[{datetime.now()}] Processing {len(detections)} detections...")
+        
+        # Remove duplicates
+        unique_detections = self.remove_duplicates(detections)
+        
+        # Create final GeoDataFrame using the utility function
+        final_gdf = create_geodataframe(unique_detections)
+        
+        # Save results
+        if not final_gdf.empty:
+            final_gdf.to_file(self.output_file, driver='GeoJSON')
+            print(f"\nResults saved to: {self.output_file}")
+            
+        return unique_detections
+
     def remove_duplicates(self, detections):
         """Remove duplicate detections with cleaner logging"""
         if not detections:
@@ -159,9 +216,9 @@ class ResultsManager:
         start_time = time.time()
         initial_count = len(detections)
         
-        # Create GeoDataFrame
+        # Create GeoDataFrame using utility function
         print(f"[{datetime.now()}] Creating GeoDataFrame...")
-        gdf = self._create_geodataframe(detections)
+        gdf = create_geodataframe(detections)
 
         # Convert to UTM for distance calculations
         print(f"[{datetime.now()}] Converting to UTM...")
@@ -214,60 +271,3 @@ class ResultsManager:
             }
             for point, conf in zip(filtered_gdf.geometry, filtered_gdf.confidence)
         ]
-
-    def _create_geodataframe(self, detections):
-        """Convert detections to GeoDataFrame with robust error handling"""
-        points = []
-        confs = []
-        
-        for i, d in enumerate(detections):
-            try:
-                if isinstance(d, dict):
-                    if 'geometry' in d and 'confidence' in d:
-                        # Handle case where detection is already in GeoDataFrame format
-                        points.append(d['geometry'])
-                        confs.append(d['confidence'])
-                    elif 'lon' in d and 'lat' in d:
-                        # Handle case where detection is in lon/lat format
-                        points.append(Point(d['lon'], d['lat']))
-                        confs.append(d.get('confidence', 0.0))
-                    else:
-                        print(f"Warning: Skipping invalid detection format at index {i}: {d}")
-                        continue
-                else:
-                    print(f"Warning: Skipping non-dictionary detection at index {i}: {d}")
-                    continue
-                
-            except Exception as e:
-                print(f"Warning: Error processing detection at index {i}: {str(e)}")
-                continue
-        
-        if not points:  # If no valid detections found
-            print("Warning: No valid detections found to create GeoDataFrame")
-            return gpd.GeoDataFrame(columns=['geometry', 'confidence'], crs="EPSG:4326")
-            
-        return gpd.GeoDataFrame(
-            {'geometry': points, 'confidence': confs},
-            crs="EPSG:4326"
-        )
-
-    def process_results(self, detections):
-        """Process final detection results"""
-        if not detections:
-            print("No detections to process")
-            return []
-            
-        print(f"\n[{datetime.now()}] Processing {len(detections)} detections...")
-        
-        # Remove duplicates
-        unique_detections = self.remove_duplicates(detections)
-        
-        # Create final GeoDataFrame
-        final_gdf = self._create_geodataframe(unique_detections)
-        
-        # Save results
-        if not final_gdf.empty:
-            final_gdf.to_file(self.output_file, driver='GeoJSON')
-            print(f"\nResults saved to: {self.output_file}")
-            
-        return unique_detections
