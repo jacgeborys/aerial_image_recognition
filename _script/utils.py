@@ -142,8 +142,14 @@ class CheckpointManager:
             crs="EPSG:4326"
         )
 class ResultsManager:
-    def __init__(self, duplicate_distance=0.5):
-        self.duplicate_distance = duplicate_distance
+    def __init__(self, output_dir, prefix="detections", duplicate_distance=5):
+        """Initialize with output path and duplicate distance"""
+        self.duplicate_distance = duplicate_distance  # meters
+        self.output_dir = output_dir
+        self.output_file = os.path.join(output_dir, f"{prefix}_results.geojson")
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
 
     def remove_duplicates(self, detections):
         """Remove duplicate detections with cleaner logging"""
@@ -244,3 +250,24 @@ class ResultsManager:
             {'geometry': points, 'confidence': confs},
             crs="EPSG:4326"
         )
+
+    def process_results(self, detections):
+        """Process final detection results"""
+        if not detections:
+            print("No detections to process")
+            return []
+            
+        print(f"\n[{datetime.now()}] Processing {len(detections)} detections...")
+        
+        # Remove duplicates
+        unique_detections = self.remove_duplicates(detections)
+        
+        # Create final GeoDataFrame
+        final_gdf = self._create_geodataframe(unique_detections)
+        
+        # Save results
+        if not final_gdf.empty:
+            final_gdf.to_file(self.output_file, driver='GeoJSON')
+            print(f"\nResults saved to: {self.output_file}")
+            
+        return unique_detections

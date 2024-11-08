@@ -8,16 +8,17 @@ def main():
         # Set up base directory
         base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Simplified configuration without worker settings
+        # Custom configuration (optional)
         config = {
-            'batch_size': 64,  # Reduced batch size
+            'batch_size': 64,
+            'num_workers': 25,
             'max_gpu_memory': 5.0,
-            'queue_size': 128
+            'queue_size': 64
         }
 
         # Initialize and run detector
         detector = CarDetector(base_dir, config)
-        results = detector.detect(interactive=False)
+        results = detector.detect(interactive=False)  # Set to False for automatic processing
 
         if results is not None and not results.empty:
             print("\nDetection completed successfully!")

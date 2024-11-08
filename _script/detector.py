@@ -17,38 +17,41 @@ from .monitors import GPUMonitor
 class CarDetector:
     def __init__(self, base_dir, config=None):
         """Initialize detector with configuration"""
-        print("Initializing detector...")
-        self.base_dir = base_dir
-        self.config = self._get_default_config()
-        if config:
-            self.config.update(config)
+        try:
+            print("\nInitializing detector...")
+            self.base_dir = base_dir
+            self.config = self._load_config(config)
+            
+            # Set up paths
+            self.frame_path = os.path.join(base_dir, 'gis', 'frames', self.config['frame_path'])
+            self.output_dir = os.path.join(base_dir, 'output')
+            self.model_path = os.path.join(base_dir, 'models', self.config['model_path'])
+            os.makedirs(self.output_dir, exist_ok=True)
+            
+            # Initialize components
+            print("\nInitializing WMS connection and GPU...")
+            self.wms_handler = WMSHandler(
+                wms_url=self.config['wms_url'],
+                num_workers=self.config['num_workers']
+            )
+            self.gpu_handler = GPUHandler(
+                model_path=self.model_path,
+                confidence_threshold=self.config['confidence_threshold'],
+                max_gpu_memory=self.config['max_gpu_memory']
+            )
+            self.checkpoint_manager = CheckpointManager(self.output_dir)
+            self.results_manager = ResultsManager(self.output_dir)
+            
+        except Exception as e:
+            print(f"Error initializing detector: {str(e)}")
+            raise
 
-        # Setup paths
-        self._setup_paths()
-
-        # Extract frame name for checkpoint files
-        self.frame_name = os.path.splitext(os.path.basename(self.frame_path))[0]
-
-        # Initialize components
-        self.gpu_monitor = GPUMonitor(log_interval=30)
-        self.checkpoint_manager = CheckpointManager(
-            self.checkpoint_dir, 
-            prefix=self.frame_name
-        )
-        self.results_manager = ResultsManager(duplicate_distance=self.config['duplicate_distance'])
-
-        # Initialize handlers immediately
-        print("\nInitializing WMS connection and GPU...")
-        self.wms_handler = WMSHandler(self.config['wms_url'])
-        self.gpu_handler = GPUHandler(
-            self.model_path,
-            max_gpu_memory=self.config['max_gpu_memory'],
-            confidence_threshold=self.config['confidence_threshold']
-        )
-
-        self._print_config()
-        self.gpu_update_interval = 5
-        self.last_gpu_update = 0
+    def _load_config(self, custom_config=None):
+        """Load configuration with custom overrides"""
+        config = self._get_default_config()
+        if custom_config:
+            config.update(custom_config)
+        return config
 
     def _get_default_config(self):
         """Get default configuration"""
@@ -278,7 +281,8 @@ class CarDetector:
         finally:
             if hasattr(self, 'gpu_handler'):
                 self.gpu_handler.cleanup()
-            self.gpu_monitor.stop()
+            if hasattr(self, 'gpu_monitor') and self.gpu_monitor:
+                self.gpu_monitor.stop()
 
     def _print_final_stats(self, results_gdf, start_time):
         """Print final processing statistics"""

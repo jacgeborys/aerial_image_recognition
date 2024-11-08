@@ -15,7 +15,7 @@ import random
 
 
 class WMSHandler:
-    def __init__(self, wms_url, timeout=45, num_workers=16):
+    def __init__(self, wms_url, timeout=45, num_workers=50):
         print("Initializing WMS connection...")
         self.wms_url = wms_url
         self.timeout = timeout
@@ -28,7 +28,10 @@ class WMSHandler:
             'successes': 0,
             'total_failures': 0,
             'total_bytes': 0,
-            'start_time': time.time()
+            'start_time': time.time(),
+            'connection_times': [],  # Track individual connection times
+            'retry_counts': [],      # Track retries per image
+            'status_codes': []       # Track HTTP status codes
         }
         if not self._connect():
             raise RuntimeError("Failed to establish WMS connection")
@@ -119,13 +122,18 @@ class WMSHandler:
                 return None
 
     def fetch_batch(self, tiles, progress_bar=None):
-        """Parallel fetch with optimized delays"""
+        """Parallel fetch with optimized delays and retries"""
         if not tiles:
             return []
         
+        print("\nStarting batch download...")
+        self._print_stats()
+        
+        results = []
+        failed_tiles = []
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
-            results = []
             
             # Submit initial batch
             for bbox in tiles:
@@ -134,19 +142,36 @@ class WMSHandler:
             # Process results
             for future, bbox in futures:
                 try:
-                    time.sleep(0.5)  # Reduced delay to 0.5s
-                    
+                    time.sleep(0.1)
                     img = future.result(timeout=self.timeout)
                     if img is not None:
                         results.append((img, bbox))
-                    
+                    else:
+                        failed_tiles.append(bbox)
                     if progress_bar:
                         progress_bar.update(1)
                         
                 except Exception as e:
                     self.stats['timeouts'] += 1
+                    failed_tiles.append(bbox)
+                    print(f"\nTimeout for tile {bbox}: {str(e)}")
                     self._print_stats()
-                    
+        
+        # Retry failed tiles sequentially
+        if failed_tiles:
+            print(f"\nRetrying {len(failed_tiles)} failed tiles...")
+            for bbox in failed_tiles:
+                time.sleep(2)  # Longer delay for retries
+                img = self.get_single_image(bbox, max_retries=2)
+                if img is not None:
+                    results.append((img, bbox))
+                    if progress_bar:
+                        progress_bar.update(0)  # Update display without incrementing
+        
+        print("\nBatch complete. Final stats:")
+        self._print_stats()
+        print()
+        
         return results
 
     def fetch_all(self, all_tiles, batch_size=1024):
