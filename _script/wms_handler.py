@@ -15,43 +15,36 @@ import random
 
 
 class WMSHandler:
-    def __init__(self, wms_url, num_workers=32, timeout=30, resolution=0.1):
+    def __init__(self, wms_url, timeout=45, num_workers=16):
         print("Initializing WMS connection...")
         self.wms_url = wms_url
-        self.num_workers = num_workers
         self.timeout = timeout
-        self.resolution = resolution  # meters per pixel
+        self.num_workers = num_workers
         self.wms = None
         self.session = self._create_session()
-        self.min_workers = 8  # New: minimum workers
-        self.current_workers = num_workers  # New: track current workers
         self.stats = {
-            'attempts': 0,        # Total initial attempts
-            'retries': 0,        # Number of retry attempts
-            'successes': 0,      # Successful downloads
-            'total_failures': 0, # Tiles that failed all retries
-            'retry_time': 0      # Total time spent in retries
+            'attempts': 0,
+            'timeouts': 0,
+            'successes': 0,
+            'total_failures': 0,
+            'total_bytes': 0,
+            'start_time': time.time()
         }
         if not self._connect():
             raise RuntimeError("Failed to establish WMS connection")
         print("WMS connection established successfully")
 
     def _create_session(self):
-        """Create session with optimized connection pooling"""
+        """Create session with conservative settings"""
         session = requests.Session()
         retry_strategy = Retry(
-            total=2,                      # Reduced from 3
-            backoff_factor=1.5,           # Reduced from 2.0 for faster retries
+            total=3,
+            backoff_factor=2.0,
             status_forcelist=[429, 500, 502, 503, 504],
             respect_retry_after_header=True,
             allowed_methods=["GET"]
         )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=self.num_workers,    # Match worker count exactly
-            pool_maxsize=self.num_workers * 2,    # Double for active connections
-            pool_block=False                      # Don't block on pool exhaustion
-        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         return session
@@ -66,34 +59,30 @@ class WMSHandler:
             return False
 
     def _print_stats(self):
-        """Print compact connection statistics with retry information"""
+        """Print detailed WMS connection statistics"""
         if self.stats['attempts'] > 0:
             success_rate = (self.stats['successes'] / self.stats['attempts']) * 100
-            retry_rate = (self.stats['retries'] / self.stats['attempts']) * 100
-            avg_retry_time = self.stats['retry_time'] / (self.stats['retries'] or 1)
-            
-            print(f"\rWMS: {self.stats['successes']}/{self.stats['attempts']} OK ({success_rate:.1f}%) | "
-                  f"Retries: {self.stats['retries']} ({retry_rate:.1f}%) | "
-                  f"Avg retry: {avg_retry_time:.1f}s", end='')
+            stats_str = (
+                f"\rWMS Stats: "
+                f"{self.stats['successes']}/{self.stats['attempts']} OK ({success_rate:.1f}%) | "
+                f"Timeouts: {self.stats['timeouts']} | "
+                f"Speed: {self.stats['successes'] / (time.time() - self.stats['start_time']):.1f} img/s | "
+                f"Avg Size: {self.stats.get('total_bytes', 0) / (self.stats['successes'] or 1) / 1024 / 1024:.1f}MB"
+            )
+            print(stats_str, end='', flush=True)
 
-    def get_single_image(self, bbox, max_retries=2, retry_delay=1.5):
-        """Fetch single image with proper WGS84 coordinates"""
-        start_time = time.time()
-        current_delay = retry_delay
-        self.stats['attempts'] += 1
-        
+    def get_single_image(self, bbox, max_retries=3):
+        """Fetch single image with maximum resolution"""
         for attempt in range(max_retries):
             try:
-                if attempt > 0:  # If this is a retry attempt
-                    self.stats['retries'] += 1
-                    # Calculate jitter here, before using it
-                    jitter = random.uniform(0, 0.05 * current_delay)
-                    time.sleep(current_delay + jitter)
-                    current_delay *= 1.5
+                if attempt > 0:
+                    self.stats['timeouts'] += 1
+                    delay = 5
+                    time.sleep(delay)
                     if not self._connect():
                         continue
 
-                # Calculate required size for target resolution
+                # Calculate maximum resolution
                 utm_zone = int((bbox[0] + 180) / 6) + 1
                 transformer = Transformer.from_crs("EPSG:4326", f"EPSG:326{utm_zone}", always_xy=True)
                 x1, y1 = transformer.transform(bbox[0], bbox[1])
@@ -101,40 +90,9 @@ class WMSHandler:
                 width_meters = abs(x2 - x1)
                 height_meters = abs(y2 - y1)
                 
-                # Calculate aspect ratio
-                aspect_ratio = width_meters / height_meters
-                
-                # Base dimensions
-                min_size = 3840  # Keep high resolution
-                max_size = 4096
-                
-                # Handle extreme aspect ratios
-                if aspect_ratio > 2 or aspect_ratio < 0.5:
-                    # For very elongated tiles, adjust the shorter dimension
-                    if width_meters > height_meters:
-                        target_width = max_size
-                        target_height = int(max_size / aspect_ratio)
-                    else:
-                        target_height = max_size
-                        target_width = int(max_size * aspect_ratio)
-                else:
-                    # Normal case - use resolution-based calculation
-                    target_width = int(width_meters / self.resolution)
-                    target_height = int(height_meters / self.resolution)
-                    
-                    # Apply size limits while maintaining aspect ratio
-                    if target_width > max_size or target_height > max_size:
-                        scale = max_size / max(target_width, target_height)
-                        target_width = int(target_width * scale)
-                        target_height = int(target_height * scale)
-                    elif target_width < min_size or target_height < min_size:
-                        scale = min_size / min(target_width, target_height)
-                        target_width = int(target_width * scale)
-                        target_height = int(target_height * scale)
-
-                # Ensure dimensions are valid
-                target_width = max(min(target_width, max_size), 256)
-                target_height = max(min(target_height, max_size), 256)
+                # Increase resolution to 5cm/pixel (was 20cm)
+                target_width = min(int(width_meters / 0.05), 4096)  # Maximum supported by server
+                target_height = min(int(height_meters / 0.05), 4096)
 
                 img = self.wms.getmap(
                     layers=['Raster'],
@@ -146,68 +104,49 @@ class WMSHandler:
                     timeout=self.timeout
                 )
                 
-                # Resize to 640x640 for model input
-                image = Image.open(io.BytesIO(img.read())).convert('RGB')
+                # Track image size
+                img_data = img.read()
+                self.stats['total_bytes'] = self.stats.get('total_bytes', 0) + len(img_data)
+                
+                image = Image.open(io.BytesIO(img_data)).convert('RGB')
                 self.stats['successes'] += 1
+                self._print_stats()
                 return image.resize((640, 640), Image.Resampling.LANCZOS)
 
             except Exception as e:
-                if attempt < max_retries - 1:
-                    continue
-        
-        self.stats['total_failures'] += 1
-        self.stats['retry_time'] += time.time() - start_time
-        self._print_stats()
-        return None
+                if attempt == max_retries - 1:
+                    print(f"\nFailed after {max_retries} attempts: {str(e)}")
+                return None
 
     def fetch_batch(self, tiles, progress_bar=None):
-        """Fetch a batch of tiles with adaptive timeouts"""
+        """Parallel fetch with optimized delays"""
         if not tiles:
             return []
-
-        # Track successful request times for adaptive timeout
-        request_times = []
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
             results = []
             
             # Submit initial batch
-            for bbox in tiles[:self.num_workers]:
+            for bbox in tiles:
                 futures.append((executor.submit(self.get_single_image, bbox), bbox))
             
-            # Process results and submit new tasks adaptively
-            tiles_iter = iter(tiles[self.num_workers:])
+            # Process results
             for future, bbox in futures:
                 try:
-                    start_time = time.time()
-                    img = future.result(timeout=self.timeout)
-                    request_time = time.time() - start_time
+                    time.sleep(0.5)  # Reduced delay to 0.5s
                     
+                    img = future.result(timeout=self.timeout)
                     if img is not None:
                         results.append((img, bbox))
-                        request_times.append(request_time)
+                    
+                    if progress_bar:
+                        progress_bar.update(1)
                         
-                        # Adjust timeout based on recent performance
-                        if len(request_times) >= 5:
-                            avg_time = sum(request_times[-5:]) / 5
-                            self.timeout = min(max(avg_time * 2, 15), 45)  # Between 15-45s
-                        
-                        # Submit next tile if available
-                        try:
-                            next_bbox = next(tiles_iter)
-                            futures.append((executor.submit(self.get_single_image, next_bbox), next_bbox))
-                        except StopIteration:
-                            pass
-                        
-                        if progress_bar:
-                            progress_bar.update(1)
-                        
-                except concurrent.futures.TimeoutError:
-                    print(f"\rTimeout fetching tile {bbox}", end='', flush=True)
                 except Exception as e:
-                    print(f"\rError fetching tile {bbox}: {str(e)}", end='', flush=True)
-
+                    self.stats['timeouts'] += 1
+                    self._print_stats()
+                    
         return results
 
     def fetch_all(self, all_tiles, batch_size=1024):
