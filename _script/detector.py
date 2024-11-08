@@ -22,10 +22,15 @@ class CarDetector:
             self.base_dir = base_dir
             self.config = self._load_config(config)
             
+            # Get frame name without extension for output folder
+            frame_name = os.path.splitext(self.config['frame_path'])[0]
+            
             # Set up paths
             self.frame_path = os.path.join(base_dir, 'gis', 'frames', self.config['frame_path'])
-            self.output_dir = os.path.join(base_dir, 'output')
+            self.output_dir = os.path.join(base_dir, 'output', frame_name)
             self.model_path = os.path.join(base_dir, 'models', self.config['model_path'])
+            
+            # Create output directory
             os.makedirs(self.output_dir, exist_ok=True)
             
             # Initialize components
@@ -57,7 +62,7 @@ class CarDetector:
             'checkpoint_interval': 50,
             'max_gpu_memory': 5.0,
             'duplicate_distance': 1.0,
-            'frame_path': 'warsaw_central.shp',
+            'frame_path': 'warsaw.shp',
             'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx',
             'num_workers': 25,
             'queue_size': 64

@@ -37,7 +37,8 @@ class GPUHandler:
             'gpu_mem_limit': int(self.max_gpu_memory * 1024 * 1024 * 1024),
             'arena_extend_strategy': 'kNextPowerOfTwo',
             'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True
+            'do_copy_in_default_stream': True,
+            'cudnn_conv_use_max_workspace': True
         }
 
         providers = [('CUDAExecutionProvider', provider_options)]
@@ -45,8 +46,11 @@ class GPUHandler:
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
-        sess_options.intra_op_num_threads = 4
-        sess_options.inter_op_num_threads = 4
+        sess_options.intra_op_num_threads = 8
+        sess_options.inter_op_num_threads = 8
+        sess_options.enable_profiling = False
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_cpu_mem_arena = True
 
         self.session = ort.InferenceSession(
             self.model_path,
@@ -138,25 +142,27 @@ class GPUHandler:
         print("\nPreparing images for GPU processing...")
         all_detections = []
         try:
-            # Preallocate GPU memory
+            # Pre-allocate lists for better memory efficiency
             gpu_tensors = []
-            for img, bbox in image_bbox_pairs:
-                try:
-                    tensor = self.preprocess_image(img)
-                    gpu_tensors.append((tensor, bbox))
-                except Exception:
-                    continue
+            gpu_tensors.extend(
+                (self.preprocess_image(img), bbox)
+                for img, bbox in image_bbox_pairs
+                if img is not None
+            )
 
-            # Process in smaller sub-batches
+            # Process in smaller sub-batches with overlap
             total_sub_batches = (len(gpu_tensors) + queue_size - 1) // queue_size
             print(f"Processing {len(gpu_tensors)} images in {total_sub_batches} sub-batches...")
 
-            for i in range(0, len(gpu_tensors), queue_size):
+            # Process batches with slight overlap for better GPU utilization
+            overlap = min(32, queue_size // 4)  # 25% overlap or 32, whichever is smaller
+            for i in range(0, len(gpu_tensors), queue_size - overlap):
                 sub_batch = gpu_tensors[i:i + queue_size]
                 batch_detections = self._process_tensors(sub_batch)
                 all_detections.extend(batch_detections)
                 
-                # Force memory cleanup after each sub-batch
+                # Explicit cleanup
+                torch.cuda.synchronize()  # Ensure GPU operations are complete
                 del sub_batch
                 torch.cuda.empty_cache()
 
@@ -175,56 +181,56 @@ class GPUHandler:
         """Run inference on tensor batch with variations and confidence adjustment"""
         detections = []
         try:
+            # Pre-allocate lists for efficiency
             for tensor_variations, bbox in tensor_batch:
                 batch_boxes = []
                 
                 # Process each variation
                 for i, tensor in enumerate(tensor_variations):
+                    # Direct numpy conversion without unnecessary transfers
                     input_tensor = tensor.unsqueeze(0).cpu().numpy()
                     outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})
                     boxes = outputs[0][0]
                     
-                    # Adjust confidence based on variation type
+                    # Quick confidence filtering
                     conf_adjustment = self._get_confidence_adjustment(i, len(tensor_variations))
                     boxes[:, 4] *= conf_adjustment
-                    
-                    # Apply confidence threshold
                     conf_mask = boxes[:, 4] > self.confidence_threshold
-                    filtered_boxes = boxes[conf_mask]
                     
-                    if len(filtered_boxes) > 0:
-                        batch_boxes.append(filtered_boxes)
+                    if conf_mask.any():
+                        batch_boxes.append(boxes[conf_mask])
                 
-                # Combine detections from all variations
+                # Process combined detections if any exist
                 if batch_boxes:
                     combined_boxes = np.concatenate(batch_boxes, axis=0)
                     boxes_tensor = torch.from_numpy(combined_boxes).cuda()
-                    
-                    # Convert to coordinates
                     centers = boxes_tensor[:, :2] / 640
+                    
+                    # Calculate coordinates efficiently
                     lon_offset = bbox[2] - bbox[0]
                     lat_offset = bbox[3] - bbox[1]
-                    
                     lons = bbox[0] + (centers[:, 0] * lon_offset)
                     lats = bbox[3] - (centers[:, 1] * lat_offset)
                     confs = boxes_tensor[:, 4]
                     
-                    # Add all detections
-                    for lon, lat, conf in zip(lons.cpu().numpy(),
-                                            lats.cpu().numpy(),
-                                            confs.cpu().numpy()):
-                        detections.append({
-                            'lon': lon,
-                            'lat': lat,
-                            'confidence': float(conf)
-                        })
+                    # Batch process coordinates
+                    coords = torch.stack([lons, lats, confs], dim=1).cpu().numpy()
+                    detections.extend([
+                        {'lon': lon, 'lat': lat, 'confidence': float(conf)}
+                        for lon, lat, conf in coords
+                    ])
                     
-                    del boxes_tensor
-                    
+                    del boxes_tensor, coords
+                
+                del batch_boxes
+                
+            return detections
+            
         except Exception as e:
             print(f"Error processing tensor batch: {str(e)}")
-        
-        return detections
+            return []
+        finally:
+            torch.cuda.empty_cache()
 
     def _get_confidence_adjustment(self, variation_index, total_variations):
         """Adjust confidence scores with enhanced shadow detection weights"""

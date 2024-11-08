@@ -13,7 +13,8 @@ def main():
             'batch_size': 64,
             'num_workers': 25,
             'max_gpu_memory': 5.0,
-            'queue_size': 64
+            'queue_size': 64,
+            'frame_path': 'warsaw_central.shp'  # Define frame path only here
         }
 
         # Initialize and run detector
@@ -22,7 +23,7 @@ def main():
 
         if results is not None and len(results) > 0:
             print("\nDetection completed successfully!")
-            print(f"Results saved to: {os.path.join(base_dir, 'output', 'detections_results.geojson')}")
+            print(f"Results saved to: {detector.output_dir}")  # Use the path from detector
             return results
         else:
             print("\nNo results generated")
