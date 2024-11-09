@@ -1,6 +1,6 @@
 from owslib.wms import WebMapService
 from PIL import Image
-import io
+from io import BytesIO
 import time
 import concurrent.futures
 from tqdm import tqdm
@@ -15,24 +15,33 @@ import random
 
 
 class WMSHandler:
-    def __init__(self, wms_url, timeout=45, num_workers=50):
+    def __init__(self, wms_url, layer='Raster', srs='EPSG:4326', size=(640, 640), 
+                 image_format='image/png', timeout=45, num_workers=50):
         print("Initializing WMS connection...")
         self.wms_url = wms_url
         self.timeout = timeout
         self.num_workers = num_workers
         self.wms = None
         self.session = self._create_session()
+        
+        # WMS configuration
+        self.layer = layer
+        self.srs = srs
+        self.size = size
+        self.image_format = image_format
+        
         self.stats = {
             'attempts': 0,
             'timeouts': 0,
             'successes': 0,
-            'total_failures': 0,
+            'failures': 0,
             'total_bytes': 0,
             'start_time': time.time(),
-            'connection_times': [],  # Track individual connection times
-            'retry_counts': [],      # Track retries per image
-            'status_codes': []       # Track HTTP status codes
+            'connection_times': [],
+            'retry_counts': [],
+            'status_codes': []
         }
+        
         if not self._connect():
             raise RuntimeError("Failed to establish WMS connection")
         print("WMS connection established successfully")
@@ -74,52 +83,43 @@ class WMSHandler:
             )
             print(stats_str, end='', flush=True)
 
-    def get_single_image(self, bbox, max_retries=3):
-        """Fetch single image with maximum resolution"""
+    def get_single_image(self, bbox, max_retries=3, initial_delay=0.1):
+        """Fetch single image with proper WMS response handling"""
+        self.stats['attempts'] += 1
+        
         for attempt in range(max_retries):
             try:
-                if attempt > 0:
-                    self.stats['timeouts'] += 1
-                    delay = 5
-                    time.sleep(delay)
-                    if not self._connect():
-                        continue
-
-                # Calculate maximum resolution
-                utm_zone = int((bbox[0] + 180) / 6) + 1
-                transformer = Transformer.from_crs("EPSG:4326", f"EPSG:326{utm_zone}", always_xy=True)
-                x1, y1 = transformer.transform(bbox[0], bbox[1])
-                x2, y2 = transformer.transform(bbox[2], bbox[3])
-                width_meters = abs(x2 - x1)
-                height_meters = abs(y2 - y1)
-                
-                # Increase resolution to 5cm/pixel (was 20cm)
-                target_width = min(int(width_meters / 0.05), 4096)  # Maximum supported by server
-                target_height = min(int(height_meters / 0.05), 4096)
-
-                img = self.wms.getmap(
-                    layers=['Raster'],
-                    srs='EPSG:4326',
+                response = self.wms.getmap(
+                    layers=[self.layer],
+                    srs=self.srs,
                     bbox=bbox,
-                    size=(target_width, target_height),
-                    format='image/jpeg',
-                    transparent=False,
-                    timeout=self.timeout
+                    size=self.size,
+                    format=self.image_format,
+                    transparent=True
                 )
                 
-                # Track image size
-                img_data = img.read()
-                self.stats['total_bytes'] = self.stats.get('total_bytes', 0) + len(img_data)
+                try:
+                    # Try to open the image directly from the response
+                    img = Image.open(BytesIO(response.read()))
+                    self.stats['successes'] += 1
+                    return img
+                except Exception as img_error:
+                    print(f"\nError reading image from response: {str(img_error)}")
+                    self.stats['failures'] += 1
                 
-                image = Image.open(io.BytesIO(img_data)).convert('RGB')
-                self.stats['successes'] += 1
-                self._print_stats()
-                return image.resize((640, 640), Image.Resampling.LANCZOS)
-
+                # Calculate backoff delay: 0.1s -> 0.2s -> 0.4s
+                delay = initial_delay * (2 ** attempt)
+                time.sleep(delay)
+                
             except Exception as e:
-                if attempt == max_retries - 1:
-                    print(f"\nFailed after {max_retries} attempts: {str(e)}")
-                return None
+                self.stats['failures'] += 1
+                print(f"\nError fetching tile {bbox}: {str(e)}")
+                delay = initial_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+        
+        self.stats['timeouts'] += 1
+        return None
 
     def fetch_batch(self, tiles, progress_bar=None):
         """Parallel fetch with optimized delays and retries"""
@@ -142,7 +142,7 @@ class WMSHandler:
             # Process results
             for future, bbox in futures:
                 try:
-                    time.sleep(0.05)
+                    time.sleep(0.03)  # Reduced sleep time
                     img = future.result(timeout=self.timeout)
                     if img is not None:
                         results.append((img, bbox))
@@ -152,21 +152,25 @@ class WMSHandler:
                         progress_bar.update(1)
                         
                 except Exception as e:
-                    self.stats['timeouts'] += 1
+                    self.stats['failures'] += 1
                     failed_tiles.append(bbox)
                     print(f"\nTimeout for tile {bbox}: {str(e)}")
                     self._print_stats()
         
-        # Retry failed tiles sequentially
+        # Retry failed tiles with increasing delays
         if failed_tiles:
             print(f"\nRetrying {len(failed_tiles)} failed tiles...")
+            retry_delays = [0.5, 1, 2]  # Progressive delays for retries
+            
             for bbox in failed_tiles:
-                time.sleep(2)  # Longer delay for retries
-                img = self.get_single_image(bbox, max_retries=2)
-                if img is not None:
-                    results.append((img, bbox))
-                    if progress_bar:
-                        progress_bar.update(0)  # Update display without incrementing
+                for delay in retry_delays:
+                    time.sleep(delay)
+                    img = self.get_single_image(bbox, max_retries=1)  # Single retry with longer delay
+                    if img is not None:
+                        results.append((img, bbox))
+                        if progress_bar:
+                            progress_bar.update(0)
+                        break  # Success, move to next tile
         
         print("\nBatch complete. Final stats:")
         self._print_stats()

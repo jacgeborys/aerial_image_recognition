@@ -37,6 +37,11 @@ class CarDetector:
             print("\nInitializing WMS connection and GPU...")
             self.wms_handler = WMSHandler(
                 wms_url=self.config['wms_url'],
+                layer=self.config.get('wms_layer', 'Raster'),
+                srs=self.config.get('wms_srs', 'EPSG:4326'),
+                size=self.config.get('wms_size', (640, 640)),
+                image_format=self.config.get('wms_format', 'image/png'),
+                timeout=self.config.get('timeout', 45),
                 num_workers=self.config['num_workers']
             )
             self.gpu_handler = GPUHandler(
@@ -56,7 +61,7 @@ class CarDetector:
         default_config = {
             'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
             'tile_size_meters': 64.0,
-            'confidence_threshold': 0.4,
+            'confidence_threshold': 0.3,
             'tile_overlap': 0.1,
             'batch_size': 64,
             'checkpoint_interval': 2000,
