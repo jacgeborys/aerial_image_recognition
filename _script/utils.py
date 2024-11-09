@@ -271,3 +271,21 @@ class ResultsManager:
             }
             for point, conf in zip(filtered_gdf.geometry, filtered_gdf.confidence)
         ]
+
+    def save_intermediate_results(self, detections, processed_count, total_tiles):
+        """Save intermediate results after duplicate removal"""
+        if not detections:
+            return
+            
+        # Create intermediate filename with progress info
+        progress_percent = (processed_count / total_tiles) * 100
+        intermediate_file = os.path.join(
+            self.output_dir,
+            f"intermediate_results_{progress_percent:.1f}percent.geojson"
+        )
+        
+        # Create GeoDataFrame and save
+        gdf = create_geodataframe(detections)
+        if not gdf.empty:
+            gdf.to_file(intermediate_file, driver='GeoJSON')
+            print(f"Intermediate results saved to: {intermediate_file}")

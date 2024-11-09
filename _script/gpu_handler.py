@@ -71,27 +71,29 @@ class GPUHandler:
         return variations
 
     def _get_lighting_variations(self, img):
-        """Get variations for different lighting conditions with enhanced shadow handling"""
+        """Get optimized variations for shadow and strong sunlight conditions"""
         variations = []
+        img_array = np.array(img)
         
-        # Original image
+        # 1. Original image
         variations.append(self._prepare_tensor(img))
         
-        # More aggressive shadow enhancement
+        # 2. Shadow-specific CLAHE enhancement
+        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        l_enhanced = clahe.apply(l)
+        enhanced_lab = cv2.merge([l_enhanced, a, b])
+        shadow_enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+        variations.append(self._prepare_tensor(Image.fromarray(shadow_enhanced)))
+        
+        # 3. Strong brightness for deep shadows
         enhancer = ImageEnhance.Brightness(img)
-        very_bright_img = enhancer.enhance(1.8)  # Increased from 1.3
-        variations.append(self._prepare_tensor(very_bright_img))
+        bright_img = enhancer.enhance(2.0)
+        variations.append(self._prepare_tensor(bright_img))
         
-        # Multi-step shadow enhancement
-        shadow_img = img
-        for brightness in [1.4, 1.6]:  # Multiple brightness levels
-            shadow_img = ImageEnhance.Brightness(shadow_img).enhance(brightness)
-            shadow_img = ImageEnhance.Contrast(shadow_img).enhance(1.3)
-            variations.append(self._prepare_tensor(shadow_img))
-        
-        # Gamma correction for shadow areas
-        img_array = np.array(img)
-        gamma = 1.5  # Adjust gamma to brighten shadows while preserving highlights
+        # 4. Gamma correction for shadow details
+        gamma = 2.0
         gamma_corrected = np.power(img_array / 255.0, 1.0 / gamma) * 255.0
         gamma_corrected = gamma_corrected.astype(np.uint8)
         variations.append(self._prepare_tensor(Image.fromarray(gamma_corrected)))
@@ -99,29 +101,20 @@ class GPUHandler:
         return variations
 
     def _get_occlusion_variations(self, img):
-        """Get variations to handle occlusions with enhanced shadow detection"""
+        """Get optimized variations for occlusion handling"""
         variations = []
         img_array = np.array(img)
         
-        # Enhanced shadow removal using CLAHE
+        # Enhanced shadow removal using aggressive CLAHE
         lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
         l, a, b = cv2.split(lab)
         
-        # Apply CLAHE multiple times with different parameters
-        clahe_variations = [
-            cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)),
-            cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4,4)),  # More aggressive
-            cv2.createCLAHE(clipLimit=3.0, tileGridSize=(16,16))  # Larger tiles
-        ]
-        
-        for clahe in clahe_variations:
-            l_enhanced = clahe.apply(l)
-            enhanced_lab = cv2.merge([l_enhanced, a, b])
-            shadow_removed = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
-            variations.append(self._prepare_tensor(Image.fromarray(shadow_removed)))
-        
-        # Rest of the existing variations...
-        # (Keep the existing adaptive thresholding, edge enhancement, and color-based segmentation)
+        # Single optimized CLAHE for occlusions
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4,4))
+        l_enhanced = clahe.apply(l)
+        enhanced_lab = cv2.merge([l_enhanced, a, b])
+        shadow_removed = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+        variations.append(self._prepare_tensor(Image.fromarray(shadow_removed)))
         
         return variations
 
@@ -233,23 +226,16 @@ class GPUHandler:
             torch.cuda.empty_cache()
 
     def _get_confidence_adjustment(self, variation_index, total_variations):
-        """Adjust confidence scores with enhanced shadow detection weights"""
-        # Original lighting variations
-        if variation_index < 5:  # Now we have more lighting variations
-            return 1.0
-        
-        # Shadow-specific variations should have higher confidence
-        shadow_adjustments = {
-            5: 0.98,  # Aggressive brightness
-            6: 0.98,  # Multi-step shadow 1
-            7: 0.98,  # Multi-step shadow 2
-            8: 0.95,  # Gamma correction
-            9: 0.95,  # CLAHE variation 1
-            10: 0.95, # CLAHE variation 2
-            11: 0.95  # CLAHE variation 3
+        """Optimized confidence adjustments for shadow detection"""
+        # Confidence weights for each variation
+        adjustments = {
+            0: 1.0,    # Original image
+            1: 0.95,   # CLAHE shadow enhancement
+            2: 0.90,   # High brightness
+            3: 0.92,   # Gamma correction
+            4: 0.88    # Occlusion CLAHE
         }
-        
-        return shadow_adjustments.get(variation_index, 0.85)
+        return adjustments.get(variation_index, 0.85)
 
     def cleanup(self):
         """Clean up GPU resources"""

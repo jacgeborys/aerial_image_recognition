@@ -59,7 +59,7 @@ class CarDetector:
             'confidence_threshold': 0.4,
             'tile_overlap': 0.1,
             'batch_size': 64,
-            'checkpoint_interval': 50,
+            'checkpoint_interval': 2000,
             'max_gpu_memory': 5.0,
             'duplicate_distance': 1.0,
             'frame_path': 'warsaw.shp',
@@ -150,7 +150,7 @@ class CarDetector:
 
         return [], []
     def detect(self, interactive=True):
-        """Main detection process with clear progress reporting"""
+        """Main detection process with aligned checkpoint and duplicate removal intervals"""
         try:
             start_time = time.time()
             print(f"\n[{datetime.now()}] Starting detection process...")
@@ -169,8 +169,10 @@ class CarDetector:
             processed_count, previous_detections = self.checkpoint_manager.load_checkpoint()
             all_detections = previous_detections.copy() if previous_detections else []
             
-            # Process in batches
-            batch_size = self.config['batch_size']
+            # Align intervals
+            interval = 2000  # Both checkpoint and duplicate removal use same interval
+            last_save = processed_count
+            
             with tqdm(
                 total=total_tiles,
                 initial=processed_count,
@@ -178,8 +180,7 @@ class CarDetector:
                 unit="tiles"
             ) as progress_bar:
                 while processed_count < total_tiles:
-                    # Get next batch
-                    batch_end = min(processed_count + batch_size, total_tiles)
+                    batch_end = min(processed_count + self.config['batch_size'], total_tiles)
                     batch_tiles = tiles[processed_count:batch_end]
                     
                     # Process batch
@@ -189,20 +190,28 @@ class CarDetector:
                         total_tiles
                     )
                     
-                    # Update progress and save results
                     if batch_detections:
                         all_detections.extend(batch_detections)
-                        # Save checkpoint with processed count and detections
-                        self.checkpoint_manager.save_checkpoint(
-                            processed_count=batch_end,
-                            detections=all_detections,
-                            total_tiles=total_tiles
-                        )
+                        
+                        # Check if it's time for duplicate removal and checkpoint
+                        if processed_count - last_save >= interval:
+                            print("\nPerforming duplicate removal...")
+                            all_detections = self.results_manager.remove_duplicates(all_detections)
+                            
+                            print(f"\nSaving checkpoint at {processed_count} tiles...")
+                            self.checkpoint_manager.save_checkpoint(
+                                processed_count=processed_count,
+                                detections=all_detections,
+                                total_tiles=total_tiles
+                            )
+                            last_save = processed_count
                     
                     processed_count = batch_end
                     progress_bar.update(len(batch_tiles))
             
-            # Final results processing
+            # Final duplicate removal and results processing
+            print("\nPerforming final duplicate removal...")
+            all_detections = self.results_manager.remove_duplicates(all_detections)
             return self.results_manager.process_results(all_detections)
             
         except Exception as e:

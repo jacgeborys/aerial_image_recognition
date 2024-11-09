@@ -10,11 +10,11 @@ def main():
 
         # Custom configuration (optional)
         config = {
-            'batch_size': 64,
+            'batch_size': 100,
             'num_workers': 25,
             'max_gpu_memory': 5.0,
-            'queue_size': 64,
-            'frame_path': 'warsaw_central.shp'  # Define frame path only here
+            'queue_size': 100,
+            'frame_path': 'warsaw.shp'  # Define frame path only here
         }
 
         # Initialize and run detector
