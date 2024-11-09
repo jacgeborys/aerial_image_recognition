@@ -33,6 +33,7 @@ class WMSHandler:
         self.stats = {
             'attempts': 0,
             'timeouts': 0,
+            'timeout_attempts': 0,
             'successes': 0,
             'failures': 0,
             'total_bytes': 0,
@@ -78,6 +79,7 @@ class WMSHandler:
                 f"\rWMS Stats: "
                 f"{self.stats['successes']}/{self.stats['attempts']} OK ({success_rate:.1f}%) | "
                 f"Timeouts: {self.stats['timeouts']} | "
+                f"Timeout Attempts: {self.stats['timeout_attempts']} | "
                 f"Speed: {self.stats['successes'] / (time.time() - self.stats['start_time']):.1f} img/s | "
                 f"Avg Size: {self.stats.get('total_bytes', 0) / (self.stats['successes'] or 1) / 1024 / 1024:.1f}MB"
             )
@@ -112,6 +114,8 @@ class WMSHandler:
                 time.sleep(delay)
                 
             except Exception as e:
+                if 'timeout' in str(e).lower():
+                    self.stats['timeout_attempts'] += 1
                 self.stats['failures'] += 1
                 print(f"\nError fetching tile {bbox}: {str(e)}")
                 delay = initial_delay * (2 ** attempt)
