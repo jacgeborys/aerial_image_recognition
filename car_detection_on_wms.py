@@ -14,7 +14,7 @@ def main():
             'num_workers': 25,
             'max_gpu_memory': 5.0,
             'queue_size': 100,
-            'frame_path': 'warsaw.shp'  # Define frame path only here
+            'frame_path': 'krakow.shp'  # Define frame path only here
         }
 
         # Initialize and run detector
