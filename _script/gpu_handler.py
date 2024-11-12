@@ -5,6 +5,7 @@ import cv2
 from PIL import Image, ImageEnhance
 import gc
 import tqdm
+import traceback
 
 
 class GPUHandler:
@@ -59,16 +60,19 @@ class GPUHandler:
         )
 
     def preprocess_image(self, img):
-        """Optimized image preprocessing with correct tensor shape"""
+        """Preprocess image for model input"""
+        # Resize to model input size (640x640) using high-quality downsampling
+        if img.size != (640, 640):
+            img = img.resize((640, 640), Image.Resampling.LANCZOS)
+        
+        # Convert to numpy array and normalize
         img_array = np.array(img)
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
         
-        # Use torch.from_numpy with pinned memory and correct shape
-        with torch.cuda.stream(torch.cuda.Stream()):
-            tensor = torch.from_numpy(img_bgr).pin_memory().cuda(non_blocking=True)
-            tensor = tensor.to(dtype=torch.float32)
-            tensor = tensor.permute(2, 0, 1) / 255.0
-            tensor = tensor.unsqueeze(0)  # Add batch dimension here (N,C,H,W)
+        # Convert to float32 and normalize
+        tensor = torch.from_numpy(img_bgr).cuda(non_blocking=True)
+        tensor = tensor.to(dtype=torch.float32)
+        tensor = tensor.permute(2, 0, 1) / 255.0  # HWC to CHW format
         
         return tensor
 
@@ -129,58 +133,48 @@ class GPUHandler:
         tensor = tensor.permute(2, 0, 1) / 255.0
         return tensor
 
-    def process_batch(self, image_bbox_pairs, queue_size=512):
-        """Process a batch of images with correct tensor handling"""
-        if not image_bbox_pairs:
-            return []
-
-        print("\nPreparing images for GPU processing...")
-        all_detections = []
+    def process_batch(self, images, queue_size=16):
+        """Process a batch of images"""
         try:
-            # Calculate actual batch size considering variations
-            variations_per_image = 5
-            effective_queue_size = queue_size // variations_per_image
-            
-            # Pre-allocate lists and prepare all tensors at once
+            print("\nPreparing images for GPU processing...")
+            # Pre-allocate lists for efficiency
             gpu_tensors = []
-            with torch.amp.autocast('cuda'):  # Updated deprecated syntax
-                gpu_tensors.extend(
-                    (self.preprocess_image(img), bbox)
-                    for img, bbox in image_bbox_pairs
-                    if img is not None
-                )
-
-            # Optimize sub-batch size based on variations
+            
+            with torch.amp.autocast('cuda'):
+                for img, bbox in images:
+                    if img is not None:
+                        # Resize and preprocess image
+                        tensor = self.preprocess_image(img)
+                        gpu_tensors.append((tensor.unsqueeze(0), bbox))  # Add batch dimension
+            
+            # Calculate optimal batch size
             available_memory = torch.cuda.get_device_properties(0).total_memory
+            variations_per_image = 5
             optimal_batch = min(
-                effective_queue_size, 
+                queue_size // variations_per_image,
                 max(16, available_memory // (1024 * 1024 * 1024 * variations_per_image))
             )
             
             total_sub_batches = (len(gpu_tensors) + optimal_batch - 1) // optimal_batch
             print(f"Processing {len(gpu_tensors)} images ({len(gpu_tensors)*variations_per_image} total with variations) "
                   f"in {total_sub_batches} sub-batches (base size: {optimal_batch})...")
-
+            
+            all_detections = []
             for i in range(0, len(gpu_tensors), optimal_batch):
                 sub_batch = gpu_tensors[i:i + optimal_batch]
-                # Tensors are already in correct shape (N,C,H,W)
                 batch_detections = self._process_tensors(sub_batch)
                 all_detections.extend(batch_detections)
                 
                 del sub_batch
                 if i % (optimal_batch * 2) == 0:
                     torch.cuda.empty_cache()
-
+            
             return all_detections
-
+            
         except Exception as e:
-            print(f"GPU processing error: {str(e)}")
+            print(f"Error processing batch: {str(e)}")
+            traceback.print_exc()
             return []
-        finally:
-            if 'gpu_tensors' in locals():
-                del gpu_tensors
-            torch.cuda.empty_cache()
-            gc.collect()
 
     def _process_tensors(self, tensor_batch):
         """Run inference on tensor batch with variations and confidence adjustment"""

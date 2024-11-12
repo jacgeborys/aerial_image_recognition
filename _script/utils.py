@@ -14,52 +14,53 @@ __all__ = ['TileGenerator', 'CheckpointManager', 'ResultsManager', 'create_geoda
 
 class TileGenerator:
     @staticmethod
-    def _get_utm_zone(lon, lat):
-        """Calculate UTM zone for given coordinates"""
+    def get_utm_epsg(lon, lat):
+        """Get the EPSG code for the UTM zone containing the given coordinates"""
         utm_zone = int((lon + 180) / 6) + 1
-        return f"326{utm_zone}" if lat >= 0 else f"327{utm_zone}"
+        epsg = 32600 + utm_zone  # Northern hemisphere
+        if lat < 0:
+            epsg += 100  # Southern hemisphere
+        return f"EPSG:{epsg}"
 
     @staticmethod
-    def generate_tiles(bounds, tile_size_meters=64.0, overlap=0.1):
-        """Generate tile coordinates with UTM-based accuracy"""
+    def generate_tiles(bounds, tile_size_meters, overlap=0.1):
+        """Generate square tiles using UTM projection"""
         minx, miny, maxx, maxy = bounds
-        mid_lon = (minx + maxx) / 2
-        mid_lat = (miny + maxy) / 2
         
-        # Get UTM zone for the area
-        utm_epsg = TileGenerator._get_utm_zone(mid_lon, mid_lat)
+        # Get center point for UTM zone selection
+        center_lon = (minx + maxx) / 2
+        center_lat = (miny + maxy) / 2
+        utm_epsg = TileGenerator.get_utm_epsg(center_lon, center_lat)
         
         # Create transformers
-        from_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
-        to_wgs84 = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
+        transformer_to_utm = Transformer.from_crs("EPSG:4326", utm_epsg, always_xy=True)
+        transformer_to_wgs = Transformer.from_crs(utm_epsg, "EPSG:4326", always_xy=True)
         
         # Convert bounds to UTM
-        utm_minx, utm_miny = from_wgs84.transform(minx, miny)
-        utm_maxx, utm_maxy = from_wgs84.transform(maxx, maxy)
+        utm_minx, utm_miny = transformer_to_utm.transform(minx, miny)
+        utm_maxx, utm_maxy = transformer_to_utm.transform(maxx, maxy)
         
-        # Calculate steps in meters
-        step_size = tile_size_meters * (1 - overlap)
-        
+        # Generate tiles in UTM coordinates
         tiles = []
-        utm_x = utm_minx
-        while utm_x < utm_maxx:
-            utm_y = utm_miny
-            while utm_y < utm_maxy:
-                # Calculate tile bounds in UTM
-                tile_utm_bounds = (
-                    utm_x,
-                    utm_y,
-                    min(utm_x + tile_size_meters, utm_maxx),
-                    min(utm_y + tile_size_meters, utm_maxy)
+        y = utm_miny
+        while y < utm_maxy:
+            x = utm_minx
+            while x < utm_maxx:
+                # Create tile in UTM
+                utm_tile = (
+                    x,
+                    y,
+                    x + tile_size_meters,
+                    y + tile_size_meters
                 )
                 
                 # Convert back to WGS84
-                wgs_x1, wgs_y1 = to_wgs84.transform(tile_utm_bounds[0], tile_utm_bounds[1])
-                wgs_x2, wgs_y2 = to_wgs84.transform(tile_utm_bounds[2], tile_utm_bounds[3])
+                wgs_x1, wgs_y1 = transformer_to_wgs.transform(utm_tile[0], utm_tile[1])
+                wgs_x2, wgs_y2 = transformer_to_wgs.transform(utm_tile[2], utm_tile[3])
                 
                 tiles.append((wgs_x1, wgs_y1, wgs_x2, wgs_y2))
-                utm_y += step_size
-            utm_x += step_size
+                x += tile_size_meters * (1 - overlap)
+            y += tile_size_meters * (1 - overlap)
         
         return tiles
 

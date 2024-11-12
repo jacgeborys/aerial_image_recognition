@@ -15,21 +15,23 @@ import random
 
 
 class WMSHandler:
-    def __init__(self, wms_url, layer='Raster', srs='EPSG:4326', size=(640, 640), 
-                 image_format='image/png', timeout=45, num_workers=50):
-        print("Initializing WMS connection...")
+    def __init__(self, wms_url, layer='Actueel_orthoHR', srs='EPSG:4326', size=(1280, 1280), 
+                 image_format='image/jpeg', timeout=45, num_workers=25):
+        """Initialize with WGS84 as default SRS"""
         self.wms_url = wms_url
         self.timeout = timeout
         self.num_workers = num_workers
-        self.wms = None
-        self.session = self._create_session()
-        
-        # WMS configuration
         self.layer = layer
         self.srs = srs
         self.size = size
         self.image_format = image_format
         
+        # Initialize failure tracking
+        self.failed_tiles_log = []
+        
+        # Initialize other attributes
+        self.wms = None
+        self.session = self._create_session()
         self.stats = {
             'attempts': 0,
             'timeouts': 0,
@@ -37,29 +39,45 @@ class WMSHandler:
             'successes': 0,
             'failures': 0,
             'total_bytes': 0,
-            'start_time': time.time(),
-            'connection_times': [],
-            'retry_counts': [],
-            'status_codes': []
+            'start_time': time.time()
         }
         
         if not self._connect():
             raise RuntimeError("Failed to establish WMS connection")
-        print("WMS connection established successfully")
 
     def _create_session(self):
-        """Create session with conservative settings"""
+        """Create session with optimized settings"""
         session = requests.Session()
+        
+        # More conservative retry strategy
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=2.0,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=5,  # Increased from 3
+            backoff_factor=0.5,  # More aggressive backoff
+            status_forcelist=[429, 500, 502, 503, 504, 520, 521, 522, 523, 524],
             respect_retry_after_header=True,
-            allowed_methods=["GET"]
+            allowed_methods=["GET"],
+            raise_on_status=False
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        
+        # Configure connection pooling
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=100,    # Increased pool size
+            pool_maxsize=100,        # Increased max size
+            pool_block=True          # Wait for connection when pool is full
+        )
+        
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+        
+        # Add headers to look more like a regular client
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/jpeg,image/png,image/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        })
+        
         return session
 
     def _connect(self):
@@ -85,8 +103,8 @@ class WMSHandler:
             )
             print(stats_str, end='', flush=True)
 
-    def get_single_image(self, bbox, max_retries=3, initial_delay=0.1):
-        """Fetch single image with proper WMS response handling"""
+    def get_single_image(self, bbox, max_retries=5, initial_delay=0.1):
+        """Fetch single image with failure logging"""
         self.stats['attempts'] += 1
         
         for attempt in range(max_retries):
@@ -101,7 +119,6 @@ class WMSHandler:
                 )
                 
                 try:
-                    # Try to open the image directly from the response
                     img = Image.open(BytesIO(response.read()))
                     self.stats['successes'] += 1
                     return img
@@ -109,24 +126,75 @@ class WMSHandler:
                     print(f"\nError reading image from response: {str(img_error)}")
                     self.stats['failures'] += 1
                 
-                # Calculate backoff delay: 0.1s -> 0.2s -> 0.4s
-                delay = initial_delay * (2 ** attempt)
-                time.sleep(delay)
-                
             except Exception as e:
+                if attempt == max_retries - 1:  # On final attempt
+                    # Log the failed tile with details
+                    self.failed_tiles_log.append({
+                        'bbox': bbox,
+                        'error': str(e),
+                        'attempt': attempt + 1,
+                        'timestamp': time.time()
+                    })
+                    
                 if 'timeout' in str(e).lower():
                     self.stats['timeout_attempts'] += 1
                 self.stats['failures'] += 1
-                print(f"\nError fetching tile {bbox}: {str(e)}")
-                delay = initial_delay * (2 ** attempt)
-                time.sleep(delay)
+                
+                print(f"\nAttempt {attempt + 1}/{max_retries} failed for tile {bbox}")
+                print(f"Error: {str(e)}")
+                
+                time.sleep(initial_delay * (2 ** attempt))
                 continue
         
         self.stats['timeouts'] += 1
         return None
 
+    def analyze_failures(self):
+        """Analyze patterns in failed tiles"""
+        if not self.failed_tiles_log:
+            return
+            
+        print("\nFailure Analysis:")
+        print("-" * 50)
+        
+        # Analyze bbox patterns
+        bbox_sizes = []
+        for fail in self.failed_tiles_log:
+            bbox = fail['bbox']
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            bbox_sizes.append((width, height))
+        
+        # Calculate statistics
+        avg_width = sum(w for w, h in bbox_sizes) / len(bbox_sizes)
+        avg_height = sum(h for w, h in bbox_sizes) / len(bbox_sizes)
+        
+        print(f"Total Failed Tiles: {len(self.failed_tiles_log)}")
+        print(f"Average Failed Tile Size: {avg_width:.6f}° x {avg_height:.6f}°")
+        
+        # Check for patterns in errors
+        error_types = {}
+        for fail in self.failed_tiles_log:
+            error_msg = fail['error']
+            error_types[error_msg] = error_types.get(error_msg, 0) + 1
+        
+        print("\nError Types:")
+        for error, count in error_types.items():
+            print(f"- {error}: {count} occurrences")
+            
+        # Check for spatial patterns
+        print("\nSpatial Distribution:")
+        min_lon = min(fail['bbox'][0] for fail in self.failed_tiles_log)
+        max_lon = max(fail['bbox'][2] for fail in self.failed_tiles_log)
+        min_lat = min(fail['bbox'][1] for fail in self.failed_tiles_log)
+        max_lat = max(fail['bbox'][3] for fail in self.failed_tiles_log)
+        
+        print(f"Failed tiles boundary box:")
+        print(f"Longitude: {min_lon:.6f} to {max_lon:.6f}")
+        print(f"Latitude: {min_lat:.6f} to {max_lat:.6f}")
+
     def fetch_batch(self, tiles, progress_bar=None):
-        """Parallel fetch with optimized delays and retries"""
+        """Process batch with failure analysis"""
         if not tiles:
             return []
         
@@ -136,17 +204,19 @@ class WMSHandler:
         results = []
         failed_tiles = []
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+        # Reduce concurrent requests
+        actual_workers = min(self.num_workers, 25)  # Cap at 25
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
+            # Submit with delay between submissions
             futures = []
-            
-            # Submit initial batch
             for bbox in tiles:
+                time.sleep(0.05)  # Small delay between submissions
                 futures.append((executor.submit(self.get_single_image, bbox), bbox))
             
             # Process results
             for future, bbox in futures:
                 try:
-                    time.sleep(0.03)  # Reduced sleep time
                     img = future.result(timeout=self.timeout)
                     if img is not None:
                         results.append((img, bbox))
@@ -154,31 +224,27 @@ class WMSHandler:
                         failed_tiles.append(bbox)
                     if progress_bar:
                         progress_bar.update(1)
-                        
                 except Exception as e:
                     self.stats['failures'] += 1
                     failed_tiles.append(bbox)
-                    print(f"\nTimeout for tile {bbox}: {str(e)}")
-                    self._print_stats()
+                    print(f"\nError for tile {bbox}: {str(e)}")
+                
+                self._print_stats()
         
-        # Retry failed tiles with increasing delays
+        # Retry failed tiles with increased delays
         if failed_tiles:
             print(f"\nRetrying {len(failed_tiles)} failed tiles...")
-            retry_delays = [0.5, 1, 2]  # Progressive delays for retries
-            
             for bbox in failed_tiles:
-                for delay in retry_delays:
+                for delay in [2, 4, 8]:  # Increased delays
                     time.sleep(delay)
-                    img = self.get_single_image(bbox, max_retries=1)  # Single retry with longer delay
+                    img = self.get_single_image(bbox, max_retries=3, initial_delay=1.0)
                     if img is not None:
                         results.append((img, bbox))
-                        if progress_bar:
-                            progress_bar.update(0)
-                        break  # Success, move to next tile
+                        break
         
-        print("\nBatch complete. Final stats:")
-        self._print_stats()
-        print()
+        # After processing all tiles, analyze failures
+        if len(self.failed_tiles_log) > 0:
+            self.analyze_failures()
         
         return results
 

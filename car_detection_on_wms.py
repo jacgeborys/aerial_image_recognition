@@ -1,5 +1,6 @@
 import os
 from _script.detector import CarDetector
+import traceback
 
 def main():
     """Main execution with error handling"""
@@ -13,7 +14,7 @@ def main():
         }
 
         detector = CarDetector(base_dir, custom_config)
-        results = detector.detect(interactive=False)
+        results = detector.detect(interactive=False, force_restart=True)
         
         if results is not None and len(results) > 0:
             print("\nDetection completed successfully!")
@@ -25,6 +26,7 @@ def main():
 
     except Exception as e:
         print(f"Error in main process: {str(e)}")
+        traceback.print_exc()
         return None
 
 if __name__ == "__main__":

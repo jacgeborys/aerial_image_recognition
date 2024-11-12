@@ -144,7 +144,7 @@ class CarDetector:
             return images, batch_detections
 
         return [], []
-    def detect(self, interactive=True):
+    def detect(self, interactive=True, force_restart=True):
         """Main detection process with aligned checkpoint and duplicate removal intervals"""
         try:
             start_time = time.time()
@@ -161,8 +161,16 @@ class CarDetector:
             print(f"Total tiles to process: {total_tiles}")
             
             # Get starting position and previous detections
-            processed_count, previous_detections = self.checkpoint_manager.load_checkpoint()
+            if force_restart:
+                processed_count = 0
+                previous_detections = []
+                print("Forced restart: ignoring previous checkpoint.")
+            else:
+                processed_count, previous_detections = self.checkpoint_manager.load_checkpoint()
+            
             all_detections = previous_detections.copy() if previous_detections else []
+            
+            print(f"Starting from tile: {processed_count + 1}")
             
             # Align intervals
             interval = 2000  # Both checkpoint and duplicate removal use same interval
@@ -238,15 +246,21 @@ class CarDetector:
         """Initialize WMS and GPU handlers"""
         try:
             if not self.wms_handler:
-                # Initialize WMS handler with only the required parameters
-                wms_url = self.config.get('wms_url', 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution')
-                self.wms_handler = WMSHandler(wms_url)  # Only pass the URL
+                self.wms_handler = WMSHandler(
+                    wms_url=self.config['wms_url'],
+                    layer=self.config['wms_layer'],
+                    srs=self.config['wms_srs'],
+                    size=self.config['wms_size'],
+                    image_format=self.config['wms_format'],
+                    timeout=self.config.get('timeout', 45),
+                    num_workers=self.config['num_workers']
+                )
 
             if not self.gpu_handler:
                 self.gpu_handler = GPUHandler(
                     model_path=self.model_path,
-                    confidence_threshold=self.config.get('confidence_threshold', 0.3),
-                    max_gpu_memory=self.config.get('max_gpu_memory', 4.0)
+                    confidence_threshold=self.config['confidence_threshold'],
+                    max_gpu_memory=self.config['max_gpu_memory']
                 )
         except Exception as e:
             print(f"Error initializing handlers: {str(e)}")
