@@ -12,45 +12,22 @@ from .wms_handler import WMSHandler
 from .gpu_handler import GPUHandler
 from .utils import TileGenerator, CheckpointManager, ResultsManager
 from .monitors import GPUMonitor
+from .config import DEFAULT_CONFIG
 
 
 class CarDetector:
-    def __init__(self, base_dir, config=None):
+    def __init__(self, base_dir, custom_config=None):
         """Initialize detector with configuration"""
         try:
             print("\nInitializing detector...")
             self.base_dir = base_dir
-            self.config = self._load_config(config)
+            self.config = self._load_config(custom_config)
             
-            # Get frame name without extension for output folder
-            frame_name = os.path.splitext(self.config['frame_path'])[0]
+            # Set up paths using base_dir
+            self._setup_paths()
             
-            # Set up paths
-            self.frame_path = os.path.join(base_dir, 'gis', 'frames', self.config['frame_path'])
-            self.output_dir = os.path.join(base_dir, 'output', frame_name)
-            self.model_path = os.path.join(base_dir, 'models', self.config['model_path'])
-            
-            # Create output directory
-            os.makedirs(self.output_dir, exist_ok=True)
-            
-            # Initialize components
-            print("\nInitializing WMS connection and GPU...")
-            self.wms_handler = WMSHandler(
-                wms_url=self.config['wms_url'],
-                layer=self.config.get('wms_layer', 'Raster'),
-                srs=self.config.get('wms_srs', 'EPSG:4326'),
-                size=self.config.get('wms_size', (640, 640)),
-                image_format=self.config.get('wms_format', 'image/png'),
-                timeout=self.config.get('timeout', 45),
-                num_workers=self.config['num_workers']
-            )
-            self.gpu_handler = GPUHandler(
-                model_path=self.model_path,
-                confidence_threshold=self.config['confidence_threshold'],
-                max_gpu_memory=self.config['max_gpu_memory']
-            )
-            self.checkpoint_manager = CheckpointManager(self.output_dir)
-            self.results_manager = ResultsManager(self.output_dir)
+            # Initialize components with unified config
+            self._initialize_components()
             
         except Exception as e:
             print(f"Error initializing detector: {str(e)}")
@@ -58,31 +35,44 @@ class CarDetector:
 
     def _load_config(self, custom_config=None):
         """Load configuration with defaults and custom overrides"""
-        default_config = {
-            'wms_url': "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution",
-            'tile_size_meters': 64.0,
-            'confidence_threshold': 0.3,
-            'tile_overlap': 0.1,
-            'batch_size': 64,
-            'checkpoint_interval': 2000,
-            'max_gpu_memory': 5.0,
-            'duplicate_distance': 1.0,
-            'frame_path': 'warsaw.shp',
-            'model_path': 'car_aerial_detection_yolo7_ITCVD_deepness.onnx',
-            'num_workers': 25,
-            'queue_size': 64
-        }
+        config = DEFAULT_CONFIG.copy()
         if custom_config:
-            default_config.update(custom_config)
-        return default_config
+            config.update(custom_config)
+        return config
 
-    def _print_config(self):
-        """Print current configuration"""
-        print("\nConfiguration:")
-        print(f"- Tile size: {self.config['tile_size_meters']}m")
-        print(f"- Batch size: {self.config['batch_size']}")
-        print(f"- GPU memory limit: {self.config['max_gpu_memory']}GB")
-        print(f"- Confidence threshold: {self.config['confidence_threshold']}")
+    def _setup_paths(self):
+        """Set up all paths relative to base_dir"""
+        frame_name = os.path.splitext(self.config['frame_path'])[0]
+        self.frame_path = os.path.join(self.base_dir, 'gis', 'frames', self.config['frame_path'])
+        self.output_dir = os.path.join(self.base_dir, 'output', frame_name)
+        self.model_path = os.path.join(self.base_dir, 'models', self.config['model_path'])
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    def _initialize_components(self):
+        """Initialize all components with unified configuration"""
+        print("\nInitializing WMS connection and GPU...")
+        self.wms_handler = WMSHandler(
+            wms_url=self.config['wms_url'],
+            layer=self.config['wms_layer'],
+            srs=self.config['wms_srs'],
+            size=self.config['wms_size'],
+            image_format=self.config['wms_format'],
+            timeout=self.config.get('timeout', 45),
+            num_workers=self.config['num_workers']
+        )
+        
+        self.gpu_handler = GPUHandler(
+            model_path=self.model_path,
+            confidence_threshold=self.config['confidence_threshold'],
+            max_gpu_memory=self.config['max_gpu_memory']
+        )
+        
+        self.checkpoint_manager = CheckpointManager(self.output_dir)
+        self.results_manager = ResultsManager(
+            self.output_dir,
+            prefix=self.config['output_prefix'],
+            duplicate_distance=self.config['duplicate_distance']
+        )
 
     def process_images(self, image_batch, progress_bar=None):
         """Process a batch of images through GPU"""
