@@ -11,7 +11,10 @@ from datetime import datetime
 from PIL import ImageDraw
 import geopandas as gpd
 from shapely.geometry import Point
-from tqdm import tqdm
+from tqdm.auto import tqdm
+import time
+from pyproj import Transformer
+import sys
 
 class SimpleDetector:
     def __init__(self, model_path, output_dir):
@@ -29,24 +32,56 @@ class SimpleDetector:
             providers=['CPUExecutionProvider']
         )
         
+        # Single session with adaptive delay
         self.session = requests.Session()
         self.session.mount('http://', requests.adapters.HTTPAdapter(max_retries=3))
         self.session.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
         
-        self.xyz_url = 'http://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
+        self.xyz_url = 'http://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
+        self.last_request_time = time.time()
+        self.current_delay = 0.01  # Start with minimal delay
+        self.consecutive_errors = 0
 
     def _fetch_tile(self, x, y, z, retries=3):
-        url = self.xyz_url.format(x=x, y=y, z=z)
+        """Fetch single XYZ tile with adaptive delay"""
+        # Use rotating servers but single session
+        server = int(time.time() * 1000) % 4  # Simple rotation based on time
+        
+        # Minimal delay between requests
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.current_delay:
+            time.sleep(self.current_delay - time_since_last)
+        
+        url = self.xyz_url.format(s=server, x=x, y=y, z=z)
+        
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=5)
             response.raise_for_status()
+            self.last_request_time = time.time()
+            
+            # Success - gradually decrease delay if it's high
+            if self.current_delay > 0.01:
+                self.current_delay = max(0.01, self.current_delay * 0.9)
+            self.consecutive_errors = 0
+            
             return Image.open(BytesIO(response.content))
+            
         except Exception as e:
+            self.consecutive_errors += 1
+            
+            # Exponentially increase delay after consecutive errors
+            if self.consecutive_errors > 1:
+                self.current_delay = min(2.0, self.current_delay * 2)
+            
             if retries > 0:
+                tqdm.write(f"Error fetching tile, increasing delay to {self.current_delay:.3f}s")
+                time.sleep(self.current_delay)
                 return self._fetch_tile(x, y, z, retries-1)
             return None
-
+    
     def get_image(self, lat, lon, target_size_meters=64):
+        """Get image centered on coordinates with correct bounds calculation"""
         meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
         pixels_needed = int(target_size_meters / meters_per_pixel)
         
@@ -117,7 +152,6 @@ class SimpleDetector:
         cropped = merged.crop((left, top, right, bottom))
         
         preview_info = {
-            "timestamp": datetime.now().isoformat(),
             "spatial_info": {
                 "center": {"lat": lat, "lon": lon},
                 "bounds": target_bounds,
@@ -135,13 +169,19 @@ class SimpleDetector:
                 "crop_size": pixels_needed,
                 "crop_offset": [left, top],
                 "final_size": [pixels_needed, pixels_needed]
-            },
-            "tiles": tiles_info
+            }
         }
         
         return cropped, preview_info, target_bounds
+    
+
+
+
+
+
 
     def detect(self, image, preview_info):
+        """Run YOLO detection with correct coordinate alignment"""
         detections = []
         bounds = preview_info['spatial_info']['bounds']
         crop_size = preview_info['image_info']['crop_size']
@@ -177,23 +217,40 @@ class SimpleDetector:
                 'yolo': {'x': float(x_yolo), 'y': float(y_yolo)}
             })
         
-        return self._remove_duplicates(detections, distance_threshold=0.5)
+        return detections
 
     def _remove_duplicates(self, detections, distance_threshold=1.0):
-        """Remove duplicate detections within distance threshold in meters"""
+        """Remove duplicate detections within distance threshold using UTM coordinates"""
         if not detections:
             return []
         
-        # Sort by confidence to keep the highest confidence detection when duplicates are found
-        detections.sort(key=lambda x: x['confidence'], reverse=True)
+        # Determine UTM zone from the first detection's longitude
+        utm_zone = int((detections[0]['lon'] + 180) / 6) + 1
+        north = detections[0]['lat'] > 0
+        epsg = f"326{utm_zone:02d}" if north else f"327{utm_zone:02d}"
+        
+        # Create transformer from WGS84 to UTM
+        transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+        
+        # Convert all detections to UTM
+        utm_detections = []
+        for det in detections:
+            x, y = transformer.transform(det['lon'], det['lat'])
+            utm_detections.append({
+                'x': x,
+                'y': y,
+                'original': det
+            })
+        
+        # Sort by confidence
+        utm_detections.sort(key=lambda x: x['original']['confidence'], reverse=True)
         kept = []
         
-        for det1 in detections:
+        for det1 in utm_detections:
             keep = True
             for det2 in kept:
-                # Calculate distance in meters
-                dx = (det1['lon'] - det2['lon']) * 111319.9 * math.cos(math.radians(det1['lat']))
-                dy = (det1['lat'] - det2['lat']) * 111319.9
+                dx = det1['x'] - det2['x']
+                dy = det1['y'] - det2['y']
                 distance = math.sqrt(dx*dx + dy*dy)
                 
                 if distance < distance_threshold:
@@ -202,50 +259,21 @@ class SimpleDetector:
             if keep:
                 kept.append(det1)
         
-        return kept
+        return [det['original'] for det in kept]
 
-if __name__ == "__main__":
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(base_dir, 'models', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
-    
-    # Read the shapefile and set up output directory
-    shp_path = os.path.join(base_dir, 'gis', 'frames', 'la_test.shp')
-    frame_name = os.path.splitext(os.path.basename(shp_path))[0]
-    output_dir = os.path.join(base_dir, 'output', frame_name)
-    
-    gdf = gpd.read_file(shp_path)
-    bounds = gdf.total_bounds
-    
-    spacing_meters = 60
-    lat_center = (bounds[1] + bounds[3]) / 2
-    meters_to_lon = 1.0 / (111319.9 * math.cos(math.radians(lat_center)))
-    meters_to_lat = 1.0 / 111319.9
-    
-    spacing_lon = spacing_meters * meters_to_lon
-    spacing_lat = spacing_meters * meters_to_lat
-    
-    lons = np.arange(bounds[0], bounds[2], spacing_lon)
-    lats = np.arange(bounds[1], bounds[3], spacing_lat)
-    
-    detector = SimpleDetector(model_path, output_dir)
-    
-    all_detections = []
-    tile_coverages = []
-    
-    total_points = len(lons) * len(lats)
-    progress_bar = tqdm(total=total_points, desc="Processing grid points")
-    
-    for lat in lats:
-        for lon in lons:
-            point = Point(lon, lat)
-            
-            if any(gdf.contains(point)):
-                try:
-                    image, preview_info, target_bounds = detector.get_image(lat, lon)
-                    detections = detector.detect(image, preview_info)
+    def process_batch(self, points):
+        """Process a batch of points with minimal delays"""
+        batch_detections = []
+        batch_coverages = []
+        
+        for lat, lon in points:
+            try:
+                image, preview_info, target_bounds = self.get_image(lat, lon)
+                if image is not None:
+                    detections = self.detect(image, preview_info)
                     
-                    all_detections.extend(detections)
-                    tile_coverages.append({
+                    batch_detections.extend(detections)
+                    batch_coverages.append({
                         "type": "Feature",
                         "geometry": {
                             "type": "Polygon",
@@ -262,21 +290,144 @@ if __name__ == "__main__":
                             "cars_detected": len(detections)
                         }
                     })
-                    
-                except Exception as e:
-                    tqdm.write(f"Error at {lat:.6f}, {lon:.6f}: {str(e)}")
+            except Exception as e:
+                tqdm.write(f"Error at {lat:.6f}, {lon:.6f}: {str(e)}")
+                time.sleep(0.5)  # Brief pause after error
+                continue
+        
+        return batch_detections, batch_coverages
+
+if __name__ == "__main__":
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(base_dir, 'models', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
+    
+    # Read the shapefile and set up output directory
+    shp_path = os.path.join(base_dir, 'gis', 'frames', 'la.shp')
+    frame_name = os.path.splitext(os.path.basename(shp_path))[0]
+    output_dir = os.path.join(base_dir, 'output', frame_name)
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define checkpoint path
+    checkpoint_path = os.path.join(output_dir, f'checkpoint_{frame_name}.geojson')
+    
+    def save_checkpoint(detections, coverages, frame_name, checkpoint_path):
+        """Save current progress to checkpoint file"""
+        checkpoint_data = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [det['lon'], det['lat']]
+                    },
+                    "properties": {
+                        "confidence": det['confidence']
+                    }
+                }
+                for det in detections
+            ],
+            "coverage": coverages,
+            "metadata": {
+                "timestamp": datetime.now().isoformat(),
+                "frame_name": frame_name,
+                "processed_tiles": processed_tiles,
+                "total_detections": len(detections)
+            }
+        }
+        
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint_data, f)
+    
+    # Read shapefile and prepare points
+    gdf = gpd.read_file(shp_path)
+    bounds = gdf.total_bounds
+    
+    # Calculate grid points
+    spacing_meters = 60
+    lat_center = (bounds[1] + bounds[3]) / 2
+    meters_to_lon = 1.0 / (111319.9 * math.cos(math.radians(lat_center)))
+    meters_to_lat = 1.0 / 111319.9
+    
+    spacing_lon = spacing_meters * meters_to_lon
+    spacing_lat = spacing_meters * meters_to_lat
+    
+    lons = np.arange(bounds[0], bounds[2], spacing_lon)
+    lats = np.arange(bounds[1], bounds[3], spacing_lat)
+    
+    # Create list of points within polygon
+    points = []
+    for lat in lats:
+        for lon in lons:
+            point = Point(lon, lat)
+            if any(gdf.contains(point)):
+                points.append((lat, lon))
+    
+    print(f"Total points to process: {len(points)}")
+    
+    # Initialize detector
+    detector = SimpleDetector(model_path, output_dir)
+    
+    # Process points in batches
+    batch_size = 25
+    all_detections = []
+    all_coverages = []
+    processed_tiles = 0
+    
+    n_batches = math.ceil(len(points) / batch_size)
+    batch_pbar = tqdm(total=n_batches, desc="Processing batches")
+    
+    try:
+        for i in range(0, len(points), batch_size):
+            batch_points = points[i:i+batch_size]
+            batch_detections, batch_coverages = detector.process_batch(batch_points)
             
-            progress_bar.update(1)
+            all_detections.extend(batch_detections)
+            all_coverages.extend(batch_coverages)
+            
+            processed_tiles += len(batch_points)
+            
+            # Save checkpoint every 2000 tiles
+            if processed_tiles % 2000 < batch_size:
+                tqdm.write(f"\nSaving checkpoint at {processed_tiles} tiles...")
+                save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+            
+            batch_pbar.update(1)
+            
+            # Very small delay between batches if everything is going well
+            if detector.consecutive_errors == 0:
+                time.sleep(0.1)
+            
+            if processed_tiles % 100 == 0:
+                tqdm.write(f"Current delay: {detector.current_delay:.3f}s")
+        
+        batch_pbar.close()
+        
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Saving checkpoint...")
+        save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nError occurred: {str(e)}")
+        print("Saving checkpoint...")
+        save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+        raise
+
     
-    progress_bar.close()
-    
-    # Remove duplicates from the complete set of detections
-    print("Removing duplicate detections...")
+    print("\nRemoving duplicates...")
     all_detections = detector._remove_duplicates(all_detections, distance_threshold=1.0)
     
+    # Prepare final outputs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Save detections
+    # Determine UTM zone for metadata
+    utm_zone = int((bounds[0] + 180) / 6) + 1
+    north = bounds[1] > 0
+    epsg = f"326{utm_zone:02d}" if north else f"327{utm_zone:02d}"
+    
+    # Save final results
     detections_geojson = {
         "type": "FeatureCollection",
         "features": [
@@ -294,28 +445,32 @@ if __name__ == "__main__":
         ],
         "metadata": {
             "timestamp": timestamp,
-            "total_points_processed": total_points,
             "total_detections": len(all_detections),
-            "duplicate_threshold_meters": 1.0
+            "duplicate_removal": {
+                "threshold_meters": 1.0,
+                "coordinate_system": f"EPSG:{epsg}",
+                "utm_zone": utm_zone
+            }
         }
     }
     
-    # Save coverage tiles
-    coverage_geojson = {
-        "type": "FeatureCollection",
-        "features": tile_coverages,
-        "metadata": {
-            "timestamp": timestamp,
-            "total_tiles": len(tile_coverages)
-        }
-    }
-    
-    # Save both files
+    # Save final files
     with open(os.path.join(output_dir, f"{frame_name}_detections_{timestamp}.geojson"), 'w') as f:
         json.dump(detections_geojson, f, indent=2)
     
     with open(os.path.join(output_dir, f"{frame_name}_coverage_{timestamp}.geojson"), 'w') as f:
-        json.dump(coverage_geojson, f, indent=2)
+        json.dump({
+            "type": "FeatureCollection",
+            "features": all_coverages,
+            "metadata": {
+                "timestamp": timestamp,
+                "total_tiles": len(all_coverages)
+            }
+        }, f, indent=2)
+    
+    # Clean up checkpoint file after successful completion
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
     
     print(f"\nProcessing complete!")
     print(f"Total cars detected: {len(all_detections)}")
