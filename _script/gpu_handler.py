@@ -6,13 +6,18 @@ from PIL import Image, ImageEnhance
 import gc
 import tqdm
 import traceback
+import math
+import json
+from datetime import datetime
+import os
 
 
 class GPUHandler:
-    def __init__(self, model_path, max_gpu_memory=5.0, confidence_threshold=0.4):
+    def __init__(self, model_path, max_gpu_memory=5.0, confidence_threshold=0.3, output_dir=None):
         self.model_path = model_path
         self.max_gpu_memory = max_gpu_memory
         self.confidence_threshold = confidence_threshold
+        self.output_dir = output_dir
         self.session = None
         self._setup_gpu()
         self._load_model()
@@ -60,21 +65,31 @@ class GPUHandler:
         )
 
     def preprocess_image(self, img):
-        """Preprocess image for model input"""
-        # Resize to model input size (640x640) using high-quality downsampling
-        if img.size != (640, 640):
-            img = img.resize((640, 640), Image.Resampling.LANCZOS)
-        
-        # Convert to numpy array and normalize
-        img_array = np.array(img)
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        
-        # Convert to float32 and normalize
-        tensor = torch.from_numpy(img_bgr).cuda(non_blocking=True)
-        tensor = tensor.to(dtype=torch.float32)
-        tensor = tensor.permute(2, 0, 1) / 255.0  # HWC to CHW format
-        
-        return tensor
+        """Preprocess image for YOLO model"""
+        try:
+            # Convert PIL Image to numpy array
+            img_np = np.array(img)
+            
+            # Resize to 640x640 if needed
+            if img_np.shape[0] != 640 or img_np.shape[1] != 640:
+                print(f"\nResizing from {img_np.shape[:2]} to (640, 640)")
+                img_np = cv2.resize(img_np, (640, 640))
+            
+            # Convert to float32 and normalize to 0-1
+            img_np = img_np.astype(np.float32) / 255.0
+            
+            # Transpose from HWC to CHW format
+            img_np = img_np.transpose(2, 0, 1)
+            
+            # Add batch dimension
+            img_np = np.expand_dims(img_np, axis=0)
+            
+            return img_np
+            
+        except Exception as e:
+            print(f"Error in image preprocessing: {str(e)}")
+            traceback.print_exc()
+            return None
 
     def _get_lighting_variations(self, img):
         """Get optimized variations for shadow and strong sunlight conditions"""
@@ -134,45 +149,71 @@ class GPUHandler:
         return tensor
 
     def process_batch(self, images, queue_size=16):
-        """Process a batch of images"""
         try:
-            print("\nPreparing images for GPU processing...")
-            # Pre-allocate lists for efficiency
-            gpu_tensors = []
-            
-            with torch.amp.autocast('cuda'):
-                for img, bbox in images:
-                    if img is not None:
-                        # Resize and preprocess image
-                        tensor = self.preprocess_image(img)
-                        gpu_tensors.append((tensor.unsqueeze(0), bbox))  # Add batch dimension
-            
-            # Calculate optimal batch size
-            available_memory = torch.cuda.get_device_properties(0).total_memory
-            variations_per_image = 5
-            optimal_batch = min(
-                queue_size // variations_per_image,
-                max(16, available_memory // (1024 * 1024 * 1024 * variations_per_image))
-            )
-            
-            total_sub_batches = (len(gpu_tensors) + optimal_batch - 1) // optimal_batch
-            print(f"Processing {len(gpu_tensors)} images ({len(gpu_tensors)*variations_per_image} total with variations) "
-                  f"in {total_sub_batches} sub-batches (base size: {optimal_batch})...")
-            
             all_detections = []
-            for i in range(0, len(gpu_tensors), optimal_batch):
-                sub_batch = gpu_tensors[i:i + optimal_batch]
-                batch_detections = self._process_tensors(sub_batch)
-                all_detections.extend(batch_detections)
+            preview_features = []
+            
+            for idx, img_set in enumerate(images):
+                if not img_set or not isinstance(img_set, list) or not img_set[0]:
+                    continue
                 
-                del sub_batch
-                if i % (optimal_batch * 2) == 0:
-                    torch.cuda.empty_cache()
+                img, bbox, _ = img_set[0]
+                lon_min, lat_min, lon_max, lat_max = bbox
+                
+                # Process detections
+                input_tensor = self.preprocess_image(img)
+                outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})
+                boxes = outputs[0][0]
+                
+                # Filter by confidence
+                conf_mask = boxes[:, 4] >= self.confidence_threshold
+                filtered_boxes = boxes[conf_mask]
+                
+                if len(filtered_boxes) > 0:
+                    sorted_indices = np.argsort(-filtered_boxes[:, 4])[:10]
+                    top_boxes = filtered_boxes[sorted_indices]
+                    
+                    print("\nDetection Coordinates:")
+                    for i, box in enumerate(top_boxes):
+                        x, y = box[0], box[1]
+                        conf = box[4]
+                        
+                        # Full coordinate transformation chain
+                        x_norm = x/640  # Normalize YOLO output
+                        y_norm = y/640
+                        
+                        x_864 = x_norm * 864  # Scale to cropped space
+                        y_864 = y_norm * 864
+                        
+                        # Calculate geographic coordinates
+                        lon = lon_min + (x_864/864) * (lon_max - lon_min)
+                        lat = lat_max - (y_864/864) * (lat_max - lat_min)
+                        
+                        # Calculate meters from origin
+                        meters_per_px = 64/864
+                        meters_x = x_864 * meters_per_px
+                        meters_y = y_864 * meters_per_px
+                        
+                        print(f"\nDetection {i+1}:")
+                        print(f"1. YOLO output (640x640):")
+                        print(f"   x: {x:.1f}, y: {y:.1f}")
+                        print(f"2. Scaled to 864x864:")
+                        print(f"   x: {x_864:.1f}, y: {y_864:.1f}")
+                        print(f"3. Geographic coordinates:")
+                        print(f"   lon: {lon:.6f}, lat: {lat:.6f}")
+                        print(f"4. Meters from tile origin:")
+                        print(f"   x: {meters_x:.1f}m, y: {meters_y:.1f}m")
+                        
+                        all_detections.append({
+                            'lon': lon,
+                            'lat': lat,
+                            'confidence': float(conf)
+                        })
             
             return all_detections
             
         except Exception as e:
-            print(f"Error processing batch: {str(e)}")
+            print(f"Error in batch processing: {str(e)}")
             traceback.print_exc()
             return []
 

@@ -16,7 +16,7 @@ DEFAULT_CONFIG = {
     'batch_size': 64,
     'checkpoint_interval': 2000,
     'max_gpu_memory': 2.0,
-    'duplicate_distance': 1.0,
+    'duplicate_distance': 0,
     'num_workers': 25,
     'queue_size': 64,
     

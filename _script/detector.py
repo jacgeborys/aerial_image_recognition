@@ -50,21 +50,32 @@ class CarDetector:
 
     def _initialize_components(self):
         """Initialize all components with unified configuration"""
-        print("\nInitializing WMS connection and GPU...")
-        self.wms_handler = WMSHandler(
-            wms_url=self.config['wms_url'],
-            layer=self.config['wms_layer'],
-            srs=self.config['wms_srs'],
-            size=self.config['wms_size'],
-            image_format=self.config['wms_format'],
-            timeout=self.config.get('timeout', 45),
-            num_workers=self.config['num_workers']
-        )
+        print("\nInitializing tile handler and GPU...")
+        
+        if self.config.get('use_xyz', False):
+            from .xyz_handler import XYZHandler
+            self.tile_handler = XYZHandler(
+                xyz_url=self.config['xyz_url'],
+                timeout=self.config.get('timeout', 45),
+                num_workers=self.config['num_workers']
+            )
+        else:
+            from .wms_handler import WMSHandler
+            self.tile_handler = WMSHandler(
+                wms_url=self.config['wms_url'],
+                layer=self.config['wms_layer'],
+                srs=self.config['wms_srs'],
+                size=self.config['wms_size'],
+                image_format=self.config['wms_format'],
+                timeout=self.config.get('timeout', 45),
+                num_workers=self.config['num_workers']
+            )
         
         self.gpu_handler = GPUHandler(
             model_path=self.model_path,
             confidence_threshold=self.config['confidence_threshold'],
-            max_gpu_memory=self.config['max_gpu_memory']
+            max_gpu_memory=self.config['max_gpu_memory'],
+            output_dir=self.output_dir
         )
         
         self.checkpoint_manager = CheckpointManager(self.output_dir)
@@ -93,14 +104,12 @@ class CarDetector:
             return []
 
     def fetch_images(self, tile_batch, progress_bar=None):
-        """Fetch a batch of images from WMS"""
+        """Fetch a batch of images from tile handler"""
         try:
-            # Ensure WMS handler is initialized
-            if not self.wms_handler:
-                self._initialize_handlers()
+            if not hasattr(self, 'tile_handler'):
+                self._initialize_components()
 
-            # Fetch images
-            return self.wms_handler.fetch_batch(tile_batch, progress_bar)
+            return self.tile_handler.fetch_batch(tile_batch, progress_bar)
         except Exception as e:
             print(f"\nError fetching images: {str(e)}")
             return []
@@ -122,7 +131,7 @@ class CarDetector:
             leave=False,
             bar_format='{desc:<12} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
         ) as fetch_progress:
-            images = self.wms_handler.fetch_batch(batch_tiles, fetch_progress)
+            images = self.tile_handler.fetch_batch(batch_tiles, fetch_progress)
 
         fetch_time = time.time() - batch_start
         

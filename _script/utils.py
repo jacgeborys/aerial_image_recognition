@@ -179,7 +179,7 @@ def create_geodataframe(detections):
     )
 
 class ResultsManager:
-    def __init__(self, output_dir, prefix="detections", duplicate_distance=1):
+    def __init__(self, output_dir, prefix="detections", duplicate_distance=0):
         """Initialize with output path and duplicate distance"""
         self.duplicate_distance = duplicate_distance  # meters
         self.output_dir = output_dir
