@@ -15,6 +15,8 @@ from tqdm.auto import tqdm
 import time
 from pyproj import Transformer
 import sys
+from collections import OrderedDict
+
 
 class SimpleDetector:
     def __init__(self, model_path, output_dir):
@@ -27,9 +29,13 @@ class SimpleDetector:
         earth_circumference = 40075016.686
         self.meters_per_pixel = earth_circumference / (2**self.zoom) / 256
         
+        # Try to use CUDA if available
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'CUDAExecutionProvider' in ort.get_available_providers() else ['CPUExecutionProvider']
+        print(f"Using ONNX providers: {providers}")
+        
         self.model = ort.InferenceSession(
             model_path, 
-            providers=['CPUExecutionProvider']
+            providers=providers
         )
         
         # Single session with adaptive delay
@@ -39,49 +45,125 @@ class SimpleDetector:
         
         self.xyz_url = 'http://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
         self.last_request_time = time.time()
-        self.current_delay = 0.01  # Start with minimal delay
+        self.current_delay = 0.01
         self.consecutive_errors = 0
+        self.session_idx = 0
+        self.tile_cache = OrderedDict()
+        self.small_tile_cache = {}
 
-    def _fetch_tile(self, x, y, z, retries=3):
-        """Fetch single XYZ tile with adaptive delay"""
-        # Use rotating servers but single session
-        server = int(time.time() * 1000) % 4  # Simple rotation based on time
+    def _fetch_tile(self, x, y, z):
+        """Fetch or reuse tile from cache."""
+        tile_key = (x, y, z)
         
-        # Minimal delay between requests
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.current_delay:
-            time.sleep(self.current_delay - time_since_last)
+        # Check if the tile is already in cache
+        if tile_key in self.tile_cache:
+            return self.tile_cache[tile_key]
         
+        # Fetch the tile if not cached
+        server = self.session_idx % 4
+        self.session_idx = (self.session_idx + 1) % 4
         url = self.xyz_url.format(s=server, x=x, y=y, z=z)
-        
+
         try:
             response = self.session.get(url, timeout=5)
-            response.raise_for_status()
-            self.last_request_time = time.time()
+            if response.status_code != 200:
+                raise requests.exceptions.RequestException(f"Status code: {response.status_code}")
             
-            # Success - gradually decrease delay if it's high
-            if self.current_delay > 0.01:
-                self.current_delay = max(0.01, self.current_delay * 0.9)
-            self.consecutive_errors = 0
+            tile_image = Image.open(BytesIO(response.content))
             
-            return Image.open(BytesIO(response.content))
+            # Store the fetched tile in cache
+            if len(self.tile_cache) >= 500:  # Limit cache size to 500 tiles, adjust as needed
+                self.tile_cache.popitem(last=False)  # Remove the oldest tile
+            self.tile_cache[tile_key] = tile_image
             
-        except Exception as e:
-            self.consecutive_errors += 1
-            
-            # Exponentially increase delay after consecutive errors
-            if self.consecutive_errors > 1:
-                self.current_delay = min(2.0, self.current_delay * 2)
-            
-            if retries > 0:
-                tqdm.write(f"Error fetching tile, increasing delay to {self.current_delay:.3f}s")
-                time.sleep(self.current_delay)
-                return self._fetch_tile(x, y, z, retries-1)
+            return tile_image
+        except requests.RequestException as e:
+            tqdm.write(f"Error fetching tile {x}, {y}, {z}: {e}")
             return None
+        
+    def _calculate_small_tile_bounds(self, lat, lon, overlap=0.1):
+        """Calculate bounds for small tiles to cover a big tile with overlap around a center point."""
+        # Calculate the necessary pixels and degrees for the overlap
+        meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
+        target_size_meters = self.model_size * meters_per_pixel * (1 + overlap)
+        
+        # Define bounds in meters around the central point
+        meters_to_lon = 1.0 / (111319.9 * math.cos(math.radians(lat)))
+        meters_to_lat = 1.0 / 111319.9
+        half_size = target_size_meters / 2
+
+        target_bounds = {
+            'west': lon - half_size * meters_to_lon,
+            'east': lon + half_size * meters_to_lon,
+            'south': lat - half_size * meters_to_lat,
+            'north': lat + half_size * meters_to_lat
+        }
+        
+        # Calculate the tile range in XYZ format at the current zoom level
+        nw_tile = mercantile.tile(target_bounds['west'], target_bounds['north'], self.zoom)
+        se_tile = mercantile.tile(target_bounds['east'], target_bounds['south'], self.zoom)
+        
+        min_x = min(nw_tile.x, se_tile.x) - 1
+        max_x = max(nw_tile.x, se_tile.x) + 1
+        min_y = min(nw_tile.y, se_tile.y) - 1
+        max_y = max(nw_tile.y, se_tile.y) + 1
+        
+        return min_x, min_y, max_x, max_y
+
+        
+    def _fetch_small_tile(self, x, y, z):
+        """Fetch or reuse small XYZ tile from the cache."""
+        tile_key = (x, y, z)
+        
+        # Check if the small tile is already in cache
+        if tile_key in self.small_tile_cache:
+            return self.small_tile_cache[tile_key]
+        
+        # Fetch from server if not cached
+        server = self.session_idx % 4
+        self.session_idx = (self.session_idx + 1) % 4
+        url = self.xyz_url.format(s=server, x=x, y=y, z=z)
+
+        try:
+            response = self.session.get(url, timeout=5)
+            if response.status_code != 200:
+                raise requests.exceptions.RequestException(f"Status code: {response.status_code}")
+            
+            tile_image = Image.open(BytesIO(response.content))
+            self.small_tile_cache[tile_key] = tile_image  # Cache the small tile
+            return tile_image
+        except requests.RequestException as e:
+            tqdm.write(f"Error fetching tile {x}, {y}, {z}: {e}")
+            return None
+
+    def get_big_tile(self, lat, lon, overlap=0.1):
+        """Generate a big tile with specified overlap by assembling small cached tiles."""
+        # Calculate required pixels with overlap
+        target_size_pixels = int(self.model_size * (1 + overlap))
+        
+        # Determine coordinates of small tiles needed to cover this big tile
+        min_x, min_y, max_x, max_y = self._calculate_small_tile_bounds(lat, lon, overlap)
+        
+        # Assemble the big tile using cached small tiles
+        big_tile = Image.new('RGB', (target_size_pixels, target_size_pixels))
+        
+        for ty in range(min_y, max_y + 1):
+            for tx in range(min_x, max_x + 1):
+                small_tile = self._fetch_small_tile(tx, ty, self.zoom)
+                
+                if small_tile:
+                    # Calculate position within big tile and paste the small tile
+                    px = (tx - min_x) * 256
+                    py = (ty - min_y) * 256
+                    big_tile.paste(small_tile, (px, py))
+        
+        # Crop the big tile to desired model input size (640x640 or as specified)
+        cropped_big_tile = big_tile.crop((0, 0, self.model_size, self.model_size))
+        return cropped_big_tile
+
     
     def get_image(self, lat, lon, target_size_meters=64):
-        """Get image centered on coordinates with correct bounds calculation"""
+        """Get image centered on coordinates with detailed tile fetching statistics"""
         meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
         pixels_needed = int(target_size_meters / meters_per_pixel)
         
@@ -109,10 +191,38 @@ class SimpleDetector:
         merged = Image.new('RGB', (tile_width * 256, tile_height * 256))
         tiles_info = []
         
+        # Initialize tile fetching statistics
+        tiles_stats = {
+            'total_tiles': 0,
+            'successful_fetches': 0,
+            'failed_fetches': 0,
+            'total_fetch_time': 0,
+            'tiles_data': []
+        }
+        
+        fetch_start = time.time()
+        total_tiles = (max_x - min_x + 1) * (max_y - min_y + 1)
+        tqdm.write(f"\nFetching {total_tiles} tiles for location {lat:.6f}, {lon:.6f}")
+        
         for ty in range(min_y, max_y + 1):
             for tx in range(min_x, max_x + 1):
+                tiles_stats['total_tiles'] += 1
+                tile_start = time.time()
+                
                 img = self._fetch_tile(tx, ty, self.zoom)
+                tile_time = time.time() - tile_start
+                tiles_stats['total_fetch_time'] += tile_time
+                
+                tile_info = {
+                    'tile_x': tx,
+                    'tile_y': ty,
+                    'fetch_time': tile_time,
+                    'success': img is not None
+                }
+                tiles_stats['tiles_data'].append(tile_info)
+                
                 if img:
+                    tiles_stats['successful_fetches'] += 1
                     px = (tx - min_x) * 256
                     py = (ty - min_y) * 256
                     merged.paste(img, (px, py))
@@ -123,6 +233,7 @@ class SimpleDetector:
                         'tile_y': ty,
                         'zoom': self.zoom,
                         'position': (px, py),
+                        'fetch_time': tile_time,
                         'bounds': {
                             'west': tile_bounds.west,
                             'east': tile_bounds.east,
@@ -130,7 +241,20 @@ class SimpleDetector:
                             'north': tile_bounds.north
                         }
                     })
+                else:
+                    tiles_stats['failed_fetches'] += 1
         
+        total_time = time.time() - fetch_start
+        
+        # Print tile fetching statistics
+        tqdm.write("\nTile fetching summary:")
+        tqdm.write(f"Total tiles: {tiles_stats['total_tiles']}")
+        tqdm.write(f"Successful: {tiles_stats['successful_fetches']}")
+        tqdm.write(f"Failed: {tiles_stats['failed_fetches']}")
+        tqdm.write(f"Total time: {total_time:.2f}s")
+        tqdm.write(f"Average time per tile: {tiles_stats['total_fetch_time']/tiles_stats['total_tiles']:.2f}s")
+        
+        # Calculate bounds and crop image
         merged_bounds = {
             'west': mercantile.bounds(min_x, min_y, self.zoom).west,
             'east': mercantile.bounds(max_x, max_y, self.zoom).east,
@@ -169,16 +293,12 @@ class SimpleDetector:
                 "crop_size": pixels_needed,
                 "crop_offset": [left, top],
                 "final_size": [pixels_needed, pixels_needed]
-            }
+            },
+            "tiles_stats": tiles_stats
         }
         
         return cropped, preview_info, target_bounds
-    
-
-
-
-
-
+        
 
     def detect(self, image, preview_info):
         """Run YOLO detection with correct coordinate alignment"""
@@ -214,6 +334,48 @@ class SimpleDetector:
                 'lat': float(lat),
                 'confidence': float(conf),
                 'image': {'x': float(x_img), 'y': float(y_img)},
+                'yolo': {'x': float(x_yolo), 'y': float(y_yolo)}
+            })
+        
+        return detections
+
+    def _process_detections(self, boxes, lat, lon):
+        """Process model detections to convert YOLO-relative coordinates to latitude and longitude."""
+        detections = []
+        
+        # Calculate bounds using meters_per_pixel from the actual zoom level
+        meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
+        half_size_meters = (self.model_size * meters_per_pixel) / 2
+        
+        # Convert half_size from meters to degrees more accurately
+        half_size_lon = half_size_meters / (111319.9 * math.cos(math.radians(lat)))
+        half_size_lat = half_size_meters / 111319.9
+        
+        bounds = {
+            'west': lon - half_size_lon,
+            'east': lon + half_size_lon,
+            'south': lat - half_size_lat,
+            'north': lat + half_size_lat
+        }
+        
+        for box in boxes:
+            x_yolo, y_yolo, w, h, conf = box[:5]
+            
+            if conf < self.confidence_threshold:
+                continue
+
+            # Convert YOLO coordinates to image fractions
+            x_frac = x_yolo / self.model_size
+            y_frac = y_yolo / self.model_size
+            
+            # Convert to lat/lon accounting for Mercator projection distortion
+            lon_det = bounds['west'] + x_frac * (bounds['east'] - bounds['west'])
+            lat_det = bounds['north'] - y_frac * (bounds['north'] - bounds['south'])
+
+            detections.append({
+                'lon': float(lon_det),
+                'lat': float(lat_det),
+                'confidence': float(conf),
                 'yolo': {'x': float(x_yolo), 'y': float(y_yolo)}
             })
         
@@ -262,17 +424,32 @@ class SimpleDetector:
         return [det['original'] for det in kept]
 
     def process_batch(self, points):
-        """Process a batch of points with minimal delays"""
+        """Process a batch of points with timing analysis and correct coordinate conversion"""
         batch_detections = []
         batch_coverages = []
         
+        timing_stats = {
+            'tile_fetching': 0,
+            'inference': 0,
+            'coordinate_processing': 0
+        }
+        
         for lat, lon in points:
             try:
+                # Get image and preview info for coordinate conversion
+                t0 = time.time()
                 image, preview_info, target_bounds = self.get_image(lat, lon)
+                timing_stats['tile_fetching'] += time.time() - t0
+                
                 if image is not None:
+                    # Run detection with correct coordinate conversion
+                    t0 = time.time()
                     detections = self.detect(image, preview_info)
+                    timing_stats['inference'] += time.time() - t0
                     
                     batch_detections.extend(detections)
+                    
+                    # Record coverage using the same bounds from preview_info
                     batch_coverages.append({
                         "type": "Feature",
                         "geometry": {
@@ -290,14 +467,18 @@ class SimpleDetector:
                             "cars_detected": len(detections)
                         }
                     })
+                    
             except Exception as e:
                 tqdm.write(f"Error at {lat:.6f}, {lon:.6f}: {str(e)}")
-                time.sleep(0.5)  # Brief pause after error
                 continue
         
-        return batch_detections, batch_coverages
+        return batch_detections, batch_coverages, timing_stats
+
 
 if __name__ == "__main__":
+    import time
+    start_time = time.time()
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(base_dir, 'models', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
     
@@ -306,10 +487,7 @@ if __name__ == "__main__":
     frame_name = os.path.splitext(os.path.basename(shp_path))[0]
     output_dir = os.path.join(base_dir, 'output', frame_name)
     
-    # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Define checkpoint path
     checkpoint_path = os.path.join(output_dir, f'checkpoint_{frame_name}.geojson')
     
     def save_checkpoint(detections, coverages, frame_name, checkpoint_path):
@@ -334,18 +512,30 @@ if __name__ == "__main__":
                 "timestamp": datetime.now().isoformat(),
                 "frame_name": frame_name,
                 "processed_tiles": processed_tiles,
-                "total_detections": len(detections)
+                "total_detections": len(detections),
+                "processing_time": time.time() - start_time
             }
         }
         
         with open(checkpoint_path, 'w') as f:
             json.dump(checkpoint_data, f)
     
+    # Initialize timing dictionary
+    timing = {
+        'setup': 0,
+        'grid_creation': 0,
+        'processing': 0,
+        'duplicate_removal': 0,
+        'saving': 0
+    }
+    
     # Read shapefile and prepare points
+    t0 = time.time()
+    print("Reading shapefile and calculating grid...")
+    
     gdf = gpd.read_file(shp_path)
     bounds = gdf.total_bounds
     
-    # Calculate grid points
     spacing_meters = 60
     lat_center = (bounds[1] + bounds[3]) / 2
     meters_to_lon = 1.0 / (111319.9 * math.cos(math.radians(lat_center)))
@@ -357,7 +547,6 @@ if __name__ == "__main__":
     lons = np.arange(bounds[0], bounds[2], spacing_lon)
     lats = np.arange(bounds[1], bounds[3], spacing_lat)
     
-    # Create list of points within polygon
     points = []
     for lat in lats:
         for lon in lons:
@@ -365,29 +554,47 @@ if __name__ == "__main__":
             if any(gdf.contains(point)):
                 points.append((lat, lon))
     
+    timing['grid_creation'] = time.time() - t0
+    print(f"Grid creation took {timing['grid_creation']:.2f}s")
     print(f"Total points to process: {len(points)}")
     
     # Initialize detector
+    t0 = time.time()
     detector = SimpleDetector(model_path, output_dir)
+    timing['setup'] = time.time() - t0
     
     # Process points in batches
-    batch_size = 25
+    batch_size = 100
     all_detections = []
     all_coverages = []
     processed_tiles = 0
     
     n_batches = math.ceil(len(points) / batch_size)
-    batch_pbar = tqdm(total=n_batches, desc="Processing batches")
+    batch_pbar = tqdm(total=n_batches, desc="Processing batches", unit="batch")
     
+    t0 = time.time()
     try:
         for i in range(0, len(points), batch_size):
+            batch_start = time.time()
+            
             batch_points = points[i:i+batch_size]
-            batch_detections, batch_coverages = detector.process_batch(batch_points)
+            batch_detections, batch_coverages, batch_timing = detector.process_batch(batch_points)
+            
+            batch_time = time.time() - batch_start
             
             all_detections.extend(batch_detections)
             all_coverages.extend(batch_coverages)
             
             processed_tiles += len(batch_points)
+            
+            # Print batch timing every 5 batches or when there's an interesting event
+            if i % (5 * batch_size) == 0 or batch_time > 30:  # Print if batch took more than 30s
+                tqdm.write(f"\nBatch {i//batch_size + 1}/{n_batches}:")
+                tqdm.write(f"  Tile fetching: {batch_timing['tile_fetching']:.2f}s")
+                tqdm.write(f"  Model inference: {batch_timing['inference']:.2f}s")
+                tqdm.write(f"  Coordinate processing: {batch_timing['coordinate_processing']:.2f}s")
+                tqdm.write(f"  Total batch time: {batch_time:.2f}s")
+                tqdm.write(f"  Cars detected: {len(batch_detections)}")
             
             # Save checkpoint every 2000 tiles
             if processed_tiles % 2000 < batch_size:
@@ -396,12 +603,9 @@ if __name__ == "__main__":
             
             batch_pbar.update(1)
             
-            # Very small delay between batches if everything is going well
-            if detector.consecutive_errors == 0:
-                time.sleep(0.1)
-            
-            if processed_tiles % 100 == 0:
-                tqdm.write(f"Current delay: {detector.current_delay:.3f}s")
+            # Dynamic delay based on batch time
+            if batch_time < 20:  # If batch is processing quickly
+                time.sleep(0.01)
         
         batch_pbar.close()
         
@@ -415,11 +619,16 @@ if __name__ == "__main__":
         save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
         raise
 
+    timing['processing'] = time.time() - t0
     
+    # Remove duplicates
     print("\nRemoving duplicates...")
+    t0 = time.time()
     all_detections = detector._remove_duplicates(all_detections, distance_threshold=1.0)
+    timing['duplicate_removal'] = time.time() - t0
     
-    # Prepare final outputs
+    # Save final results
+    t0 = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Determine UTM zone for metadata
@@ -427,7 +636,6 @@ if __name__ == "__main__":
     north = bounds[1] > 0
     epsg = f"326{utm_zone:02d}" if north else f"327{utm_zone:02d}"
     
-    # Save final results
     detections_geojson = {
         "type": "FeatureCollection",
         "features": [
@@ -446,6 +654,8 @@ if __name__ == "__main__":
         "metadata": {
             "timestamp": timestamp,
             "total_detections": len(all_detections),
+            "processing_time": time.time() - start_time,
+            "timing_breakdown": timing,
             "duplicate_removal": {
                 "threshold_meters": 1.0,
                 "coordinate_system": f"EPSG:{epsg}",
@@ -464,14 +674,24 @@ if __name__ == "__main__":
             "features": all_coverages,
             "metadata": {
                 "timestamp": timestamp,
-                "total_tiles": len(all_coverages)
+                "total_tiles": len(all_coverages),
+                "processing_time": time.time() - start_time
             }
         }, f, indent=2)
     
-    # Clean up checkpoint file after successful completion
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
+        
+    timing['saving'] = time.time() - t0
+    total_time = time.time() - start_time
     
     print(f"\nProcessing complete!")
+    print(f"Total time: {total_time:.2f}s")
+    print(f"Timing breakdown:")
+    print(f"  Setup: {timing['setup']:.2f}s")
+    print(f"  Grid creation: {timing['grid_creation']:.2f}s")
+    print(f"  Processing: {timing['processing']:.2f}s")
+    print(f"  Duplicate removal: {timing['duplicate_removal']:.2f}s")
+    print(f"  Saving: {timing['saving']:.2f}s")
     print(f"Total cars detected: {len(all_detections)}")
     print(f"Results saved to: {output_dir}")

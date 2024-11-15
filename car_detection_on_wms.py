@@ -9,7 +9,7 @@ def main():
         
         # Update config for XYZ tiles
         custom_config = {
-            'frame_path': 'la_test.shp',
+            'frame_path': 'la.shp',
             'xyz_url': 'http://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',  # Google Satellite
             'use_xyz': True  # Flag to use XYZ instead of WMS
         }
