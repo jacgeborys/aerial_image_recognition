@@ -53,6 +53,23 @@ class SimpleDetector:
         self.tile_cache_size = 10000
         self.current_row_cache = {}  # Cache for current processing row
         self.previous_row_cache = {}  # Cache for previous row
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+        self.sessions = []
+        for _ in range(4):
+            session = requests.Session()
+            session.mount('http://', requests.adapters.HTTPAdapter(
+                max_retries=3,
+                pool_connections=10,
+                pool_maxsize=10
+            ))
+            session.mount('https://', requests.adapters.HTTPAdapter(
+                max_retries=3,
+                pool_connections=10,
+                pool_maxsize=10
+            ))
+            self.sessions.append(session)
 
     def _manage_cache(self, new_y):
         """Manage row-based caching when moving to new row"""
@@ -67,42 +84,33 @@ class SimpleDetector:
                 self.previous_row_cache = {}
 
     def _fetch_tile(self, x, y, z):
-        """Enhanced tile fetching with row-based caching"""
+        """Optimized tile fetching with better cache usage"""
         tile_key = (x, y, z)
         
-        # Check row caches first
-        if tile_key in self.current_row_cache:
-            return self.current_row_cache[tile_key]
-        if tile_key in self.previous_row_cache:
-            return self.previous_row_cache[tile_key]
-            
-        # Then check main cache
+        # Check cache first
         if tile_key in self.tile_cache:
             return self.tile_cache[tile_key]
+            
+        # Use session pool round-robin for new fetches
+        session = self.sessions[self.session_idx % len(self.sessions)]
+        self.session_idx = (self.session_idx + 1) % len(self.sessions)
         
-        # Fetch new tile
         server = self.session_idx % 4
-        self.session_idx = (self.session_idx + 1) % 4
         url = self.xyz_url.format(s=server, x=x, y=y, z=z)
 
         try:
-            response = self.session.get(url, timeout=5)
-            if response.status_code != 200:
-                raise requests.exceptions.RequestException(f"Status code: {response.status_code}")
-            
-            tile_image = Image.open(BytesIO(response.content))
-            
-            # Store in both caches
-            self.current_row_cache[tile_key] = tile_image
-            
-            # Store in main cache with size limit
-            if len(self.tile_cache) >= self.tile_cache_size:
-                self.tile_cache.popitem(last=False)
-            self.tile_cache[tile_key] = tile_image
-            
-            return tile_image
-        except requests.RequestException as e:
-            tqdm.write(f"Error fetching tile {x}, {y}, {z}: {e}")
+            response = session.get(url, timeout=5)
+            if response.status_code == 200:
+                tile_image = Image.open(BytesIO(response.content))
+                
+                # Update cache with thread safety
+                if len(self.tile_cache) >= self.tile_cache_size:
+                    # Remove oldest item
+                    self.tile_cache.popitem(last=False)
+                self.tile_cache[tile_key] = tile_image
+                
+                return tile_image
+        except requests.RequestException:
             return None
         
     def _calculate_small_tile_bounds(self, lat, lon, overlap=0.1):
@@ -187,7 +195,7 @@ class SimpleDetector:
 
     
     def get_image(self, lat, lon, target_size_meters=64):
-        """Get image centered on coordinates with detailed tile fetching statistics"""
+        """Get image centered on coordinates with optimized tile fetching"""
         meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
         pixels_needed = int(target_size_meters / meters_per_pixel)
         
@@ -210,73 +218,40 @@ class SimpleDetector:
         min_y = min(nw_tile.y, se_tile.y) - 1
         max_y = max(nw_tile.y, se_tile.y) + 1
         
+        # Pre-calculate all tile coordinates
+        tile_coords = [
+            (tx, ty, self.zoom)
+            for ty in range(min_y, max_y + 1)
+            for tx in range(min_x, max_x + 1)
+        ]
+        
         tile_width = max_x - min_x + 1
         tile_height = max_y - min_y + 1
         merged = Image.new('RGB', (tile_width * 256, tile_height * 256))
-        tiles_info = []
         
-        # Initialize tile fetching statistics
+        # Track fetching statistics
         tiles_stats = {
-            'total_tiles': 0,
+            'total_tiles': len(tile_coords),
             'successful_fetches': 0,
             'failed_fetches': 0,
-            'total_fetch_time': 0,
-            'tiles_data': []
+            'total_fetch_time': 0
         }
         
         fetch_start = time.time()
-        total_tiles = (max_x - min_x + 1) * (max_y - min_y + 1)
-        tqdm.write(f"\nFetching {total_tiles} tiles for location {lat:.6f}, {lon:.6f}")
         
-        for ty in range(min_y, max_y + 1):
-            for tx in range(min_x, max_x + 1):
-                tiles_stats['total_tiles'] += 1
-                tile_start = time.time()
-                
-                img = self._fetch_tile(tx, ty, self.zoom)
-                tile_time = time.time() - tile_start
-                tiles_stats['total_fetch_time'] += tile_time
-                
-                tile_info = {
-                    'tile_x': tx,
-                    'tile_y': ty,
-                    'fetch_time': tile_time,
-                    'success': img is not None
-                }
-                tiles_stats['tiles_data'].append(tile_info)
-                
-                if img:
-                    tiles_stats['successful_fetches'] += 1
-                    px = (tx - min_x) * 256
-                    py = (ty - min_y) * 256
-                    merged.paste(img, (px, py))
-                    
-                    tile_bounds = mercantile.bounds(tx, ty, self.zoom)
-                    tiles_info.append({
-                        'tile_x': tx,
-                        'tile_y': ty,
-                        'zoom': self.zoom,
-                        'position': (px, py),
-                        'fetch_time': tile_time,
-                        'bounds': {
-                            'west': tile_bounds.west,
-                            'east': tile_bounds.east,
-                            'south': tile_bounds.south,
-                            'north': tile_bounds.north
-                        }
-                    })
-                else:
-                    tiles_stats['failed_fetches'] += 1
-        
-        total_time = time.time() - fetch_start
-        
-        # Print tile fetching statistics
-        tqdm.write("\nTile fetching summary:")
-        tqdm.write(f"Total tiles: {tiles_stats['total_tiles']}")
-        tqdm.write(f"Successful: {tiles_stats['successful_fetches']}")
-        tqdm.write(f"Failed: {tiles_stats['failed_fetches']}")
-        tqdm.write(f"Total time: {total_time:.2f}s")
-        tqdm.write(f"Average time per tile: {tiles_stats['total_fetch_time']/tiles_stats['total_tiles']:.2f}s")
+        # Batch process tiles
+        for tx, ty, z in tile_coords:
+            tile_start = time.time()
+            img = self._fetch_tile(tx, ty, z)
+            tiles_stats['total_fetch_time'] += time.time() - tile_start
+            
+            if img:
+                tiles_stats['successful_fetches'] += 1
+                px = (tx - min_x) * 256
+                py = (ty - min_y) * 256
+                merged.paste(img, (px, py))
+            else:
+                tiles_stats['failed_fetches'] += 1
         
         # Calculate bounds and crop image
         merged_bounds = {
@@ -448,56 +423,72 @@ class SimpleDetector:
         return [det['original'] for det in kept]
 
     def process_batch(self, points):
-        """Process a batch of points with timing analysis and correct coordinate conversion"""
-        batch_detections = []
-        batch_coverages = []
+        batch_detections = []  # Added to collect detections
+        batch_coverages = []   # Added to collect coverages
+        batch_stats = {
+            'tiles_fetched': 0,
+            'successful_fetches': 0,
+            'total_detections': 0,
+            'fetch_time': 0
+        }
         
-        timing_stats = {
+        timing_stats = {       # Added to match original return format
             'tile_fetching': 0,
             'inference': 0,
             'coordinate_processing': 0
         }
         
-        for lat, lon in points:
-            try:
-                # Get image and preview info for coordinate conversion
-                t0 = time.time()
-                image, preview_info, target_bounds = self.get_image(lat, lon)
-                timing_stats['tile_fetching'] += time.time() - t0
-                
-                if image is not None:
-                    # Run detection with correct coordinate conversion
-                    t0 = time.time()
-                    detections = self.detect(image, preview_info)
-                    timing_stats['inference'] += time.time() - t0
-                    
-                    batch_detections.extend(detections)
-                    
-                    # Record coverage using the same bounds from preview_info
-                    batch_coverages.append({
-                        "type": "Feature",
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [[
-                                [target_bounds['west'], target_bounds['south']],
-                                [target_bounds['east'], target_bounds['south']],
-                                [target_bounds['east'], target_bounds['north']],
-                                [target_bounds['west'], target_bounds['north']],
-                                [target_bounds['west'], target_bounds['south']]
-                            ]]
-                        },
-                        "properties": {
-                            "center": {"lat": lat, "lon": lon},
-                            "cars_detected": len(detections)
-                        }
-                    })
-                    
-            except Exception as e:
-                tqdm.write(f"Error at {lat:.6f}, {lon:.6f}: {str(e)}")
-                continue
+        print_interval = 20
         
-        return batch_detections, batch_coverages, timing_stats
+        for idx, (lat, lon) in enumerate(points):
+            t0 = time.time()
+            image, preview_info, target_bounds = self.get_image(lat, lon)
+            fetch_time = time.time() - t0
+            
+            timing_stats['tile_fetching'] += fetch_time
+            batch_stats['tiles_fetched'] += 1
+            batch_stats['fetch_time'] += fetch_time
+            
+            if image is not None:
+                batch_stats['successful_fetches'] += 1
+                
+                # Time the inference
+                t0 = time.time()
+                detections = self.detect(image, preview_info)
+                inference_time = time.time() - t0
+                timing_stats['inference'] += inference_time
+                
+                batch_detections.extend(detections)
+                batch_stats['total_detections'] += len(detections)
+                
+                # Add coverage information
+                batch_coverages.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [target_bounds['west'], target_bounds['south']],
+                            [target_bounds['east'], target_bounds['south']],
+                            [target_bounds['east'], target_bounds['north']],
+                            [target_bounds['west'], target_bounds['north']],
+                            [target_bounds['west'], target_bounds['south']]
+                        ]]
+                    },
+                    "properties": {
+                        "center": {"lat": lat, "lon": lon},
+                        "cars_detected": len(detections)
+                    }
+                })
+                
+            # Print less frequently
+            if idx % print_interval == 0:
+                avg_time = batch_stats['fetch_time'] / max(1, batch_stats['tiles_fetched'])
+                tqdm.write(f"\nProcessed {batch_stats['tiles_fetched']} tiles, "
+                        f"avg time: {avg_time:.2f}s, "
+                        f"detections: {batch_stats['total_detections']}")
 
+        # Return the expected tuple
+        return batch_detections, batch_coverages, timing_stats
 
 if __name__ == "__main__":
     import time
@@ -621,7 +612,7 @@ if __name__ == "__main__":
                 tqdm.write(f"  Cars detected: {len(batch_detections)}")
             
             # Save checkpoint every 2000 tiles
-            if processed_tiles % 2000 < batch_size:
+            if processed_tiles % 150 < batch_size:
                 tqdm.write(f"\nSaving checkpoint at {processed_tiles} tiles...")
                 save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
             
@@ -687,7 +678,7 @@ if __name__ == "__main__":
             }
         }
     }
-    
+
     # Save final files
     with open(os.path.join(output_dir, f"{frame_name}_detections_{timestamp}.geojson"), 'w') as f:
         json.dump(detections_geojson, f, indent=2)
