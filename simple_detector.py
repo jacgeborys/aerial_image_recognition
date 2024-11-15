@@ -50,16 +50,37 @@ class SimpleDetector:
         self.session_idx = 0
         self.tile_cache = OrderedDict()
         self.small_tile_cache = {}
+        self.tile_cache_size = 10000
+        self.current_row_cache = {}  # Cache for current processing row
+        self.previous_row_cache = {}  # Cache for previous row
+
+    def _manage_cache(self, new_y):
+        """Manage row-based caching when moving to new row"""
+        if self.current_row_y != new_y:
+            # Moving to new row
+            self.previous_row_cache = self.current_row_cache
+            self.current_row_cache = {}
+            self.current_row_y = new_y
+            
+            # Clear previous row cache if moving up more than one row
+            if abs(new_y - self.current_row_y) > 1:
+                self.previous_row_cache = {}
 
     def _fetch_tile(self, x, y, z):
-        """Fetch or reuse tile from cache."""
+        """Enhanced tile fetching with row-based caching"""
         tile_key = (x, y, z)
         
-        # Check if the tile is already in cache
+        # Check row caches first
+        if tile_key in self.current_row_cache:
+            return self.current_row_cache[tile_key]
+        if tile_key in self.previous_row_cache:
+            return self.previous_row_cache[tile_key]
+            
+        # Then check main cache
         if tile_key in self.tile_cache:
             return self.tile_cache[tile_key]
         
-        # Fetch the tile if not cached
+        # Fetch new tile
         server = self.session_idx % 4
         self.session_idx = (self.session_idx + 1) % 4
         url = self.xyz_url.format(s=server, x=x, y=y, z=z)
@@ -71,9 +92,12 @@ class SimpleDetector:
             
             tile_image = Image.open(BytesIO(response.content))
             
-            # Store the fetched tile in cache
-            if len(self.tile_cache) >= 500:  # Limit cache size to 500 tiles, adjust as needed
-                self.tile_cache.popitem(last=False)  # Remove the oldest tile
+            # Store in both caches
+            self.current_row_cache[tile_key] = tile_image
+            
+            # Store in main cache with size limit
+            if len(self.tile_cache) >= self.tile_cache_size:
+                self.tile_cache.popitem(last=False)
             self.tile_cache[tile_key] = tile_image
             
             return tile_image
@@ -605,7 +629,7 @@ if __name__ == "__main__":
             
             # Dynamic delay based on batch time
             if batch_time < 20:  # If batch is processing quickly
-                time.sleep(0.01)
+                time.sleep(0.001)
         
         batch_pbar.close()
         
