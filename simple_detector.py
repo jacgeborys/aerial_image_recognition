@@ -20,6 +20,7 @@ import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from rtree import index
+from collections import defaultdict
 
 
 class SimpleDetector:
@@ -33,76 +34,78 @@ class SimpleDetector:
         earth_circumference = 40075016.686
         self.meters_per_pixel = earth_circumference / (2**self.zoom) / 256
         
-        # Configure ONNX providers with optimized settings
-        providers = []
-        provider_options = []
+        # Initialize model
+        try:
+            self.model = ort.InferenceSession(
+                model_path,
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            )
+            print(f"Model loaded with providers: {self.model.get_providers()}")
+        except Exception as e:
+            print(f"GPU initialization failed, using CPU. Error: {str(e)}")
+            self.model = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            print("Model loaded with CPU")
 
-        if 'TensorrtExecutionProvider' in ort.get_available_providers():
-            # TensorRT settings
-            provider_options.append({
-                "trt_max_workspace_size": "5368709120",  # 5GB
-                "trt_fp16_enable": True,  # Enable FP16 precision
-            })
-            providers.append('TensorrtExecutionProvider')
-        
-        if 'CUDAExecutionProvider' in ort.get_available_providers():
-            # CUDA settings
-            provider_options.append({
-                "device_id": 0,
-                "gpu_mem_limit": "5368709120",  # 5GB
-                "arena_extend_strategy": "kNextPowerOfTwo",
-                "cudnn_conv_algo_search": "EXHAUSTIVE",
-                "do_copy_in_default_stream": True,
-            })
-            providers.append('CUDAExecutionProvider')
-        
-        providers.append('CPUExecutionProvider')
-        provider_options.append({})
-
-        print(f"Using ONNX providers: {providers}")
-        print(f"With options: {provider_options}")
-        
-        # Create inference session with optimized settings
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.enable_mem_pattern = True
-        sess_options.enable_mem_reuse = True
-        sess_options.intra_op_num_threads = 1
-        sess_options.inter_op_num_threads = 1
-
-        self.model = ort.InferenceSession(
-            model_path,
-            sess_options=sess_options,
-            providers=providers,
-            provider_options=provider_options
-        )
-        
+        # Initialize tile fetching
         self.xyz_url = 'http://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
-        self.session_idx = 0
         self.tile_cache = OrderedDict()
-        self.tile_cache_size = 10000  # Increased cache size
+        self.tile_cache_size = 10000
+        self.session_idx = 0
         
-        # Create event loop
+        # Initialize async components with proper setup
+        if sys.platform.startswith('win'):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+        async def init_client():
+            connector = aiohttp.TCPConnector(
+                limit=30,
+                ttl_dns_cache=300,
+                use_dns_cache=True,
+                limit_per_host=8,
+                force_close=False,
+                enable_cleanup_closed=True
+            )
+            
+            timeout = aiohttp.ClientTimeout(
+                total=30,
+                connect=5,
+                sock_connect=5,
+                sock_read=10
+            )
+            
+            return aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                raise_for_status=False
+            )
+
+        # Create and set event loop
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         
-        # Initialize async session
-        self.session = self.loop.run_until_complete(self._init_session())
-        self.semaphore = asyncio.Semaphore(8)  # Limit concurrent requests
-
-    async def _init_session(self):
-        """Initialize async session"""
-        return aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=10),
-            timeout=aiohttp.ClientTimeout(total=10)
-        )
+        # Initialize session and semaphore
+        try:
+            self.session = self.loop.run_until_complete(init_client())
+            self.semaphore = asyncio.Semaphore(16)
+        except Exception as e:
+            print(f"Failed to initialize async components: {str(e)}")
+            raise
 
     def __del__(self):
         """Cleanup resources"""
         if hasattr(self, 'session') and self.session is not None:
-            self.loop.run_until_complete(self.session.close())
+            try:
+                if not self.session.closed:
+                    self.loop.run_until_complete(self.session.close())
+            except Exception:
+                pass
+        
         if hasattr(self, 'loop') and self.loop is not None:
-            self.loop.close()
+            try:
+                self.loop.close()
+            except Exception:
+                pass
 
 
 
@@ -136,10 +139,65 @@ class SimpleDetector:
             
             return None
 
-    async def _fetch_tiles_batch(self, tile_coords):
-        """Fetch multiple tiles concurrently"""
-        tasks = [self._fetch_tile_async(x, y, z) for x, y, z in tile_coords]
-        return await asyncio.gather(*tasks)
+    async def _fetch_tiles_batch(self, tile_coords, max_retries=3):
+        """Fetch multiple tiles concurrently with improved connection handling"""
+        async def fetch_with_retry(x, y, z, server_id, retry=0):
+            tile_key = (x, y, z)
+            
+            # Check cache first
+            if tile_key in self.tile_cache:
+                return tile_key, self.tile_cache[tile_key]
+            
+            try:
+                async with self.semaphore:
+                    url = self.xyz_url.format(s=server_id, x=x, y=y, z=z)
+                    
+                    async with self.session.get(url, timeout=5) as response:
+                        if response.status == 200:
+                            content = await response.read()
+                            tile_image = Image.open(BytesIO(content))
+                            
+                            # Update cache with size limit
+                            if len(self.tile_cache) >= self.tile_cache_size:
+                                self.tile_cache.popitem(last=False)
+                            self.tile_cache[tile_key] = tile_image
+                            
+                            return tile_key, tile_image
+                        elif response.status == 429 and retry < max_retries:  # Rate limit
+                            await asyncio.sleep(1 * (retry + 1))
+                            return await fetch_with_retry(x, y, z, server_id, retry + 1)
+            except Exception as e:
+                if retry < max_retries:
+                    await asyncio.sleep(0.5 * (retry + 1))
+                    return await fetch_with_retry(x, y, z, server_id, retry + 1)
+            return tile_key, None
+
+        # Distribute requests across servers more evenly
+        server_queues = [[] for _ in range(4)]
+        for i, (x, y, z) in enumerate(tile_coords):
+            server_id = i % 4
+            server_queues[server_id].append((x, y, z))
+
+        # Process each server's queue with controlled concurrency
+        all_results = {}
+        for server_id, queue in enumerate(server_queues):
+            if not queue:
+                continue
+            
+            # Process tiles for this server with controlled parallelism
+            tasks = [fetch_with_retry(x, y, z, server_id) for x, y, z in queue]
+            results = await asyncio.gather(*tasks)
+            
+            # Store successful results
+            for tile_key, image in results:
+                if image is not None:
+                    all_results[tile_key] = image
+            
+            # Small delay between server switches to prevent overwhelming
+            if server_id < 3:  # Don't delay after last server
+                await asyncio.sleep(0.1)
+
+        return [all_results.get((x, y, z)) for x, y, z in tile_coords]
 
 
     def _manage_cache(self, new_y):
@@ -445,24 +503,11 @@ class SimpleDetector:
         
         return detections
 
-    def _process_detections(self, boxes, lat, lon):
+    def _process_detections(self, boxes, preview_info):
         """Process model detections to convert YOLO-relative coordinates to latitude and longitude."""
         detections = []
-        
-        # Calculate bounds using meters_per_pixel from the actual zoom level
-        meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
-        half_size_meters = (self.model_size * meters_per_pixel) / 2
-        
-        # Convert half_size from meters to degrees more accurately
-        half_size_lon = half_size_meters / (111319.9 * math.cos(math.radians(lat)))
-        half_size_lat = half_size_meters / 111319.9
-        
-        bounds = {
-            'west': lon - half_size_lon,
-            'east': lon + half_size_lon,
-            'south': lat - half_size_lat,
-            'north': lat + half_size_lat
-        }
+        bounds = preview_info['spatial_info']['bounds']
+        crop_size = preview_info['image_info']['crop_size']
         
         for box in boxes:
             x_yolo, y_yolo, w, h, conf = box[:5]
@@ -474,14 +519,19 @@ class SimpleDetector:
             x_frac = x_yolo / self.model_size
             y_frac = y_yolo / self.model_size
             
-            # Convert to lat/lon accounting for Mercator projection distortion
-            lon_det = bounds['west'] + x_frac * (bounds['east'] - bounds['west'])
-            lat_det = bounds['north'] - y_frac * (bounds['north'] - bounds['south'])
+            # Convert to lat/lon using the bounds from preview_info
+            lon = bounds['west'] + x_frac * (bounds['east'] - bounds['west'])
+            lat = bounds['north'] - y_frac * (bounds['north'] - bounds['south'])
+            
+            # Convert to image coordinates
+            x_img = x_frac * crop_size
+            y_img = y_frac * crop_size
 
             detections.append({
-                'lon': float(lon_det),
-                'lat': float(lat_det),
+                'lon': float(lon),
+                'lat': float(lat),
                 'confidence': float(conf),
+                'image': {'x': float(x_img), 'y': float(y_img)},
                 'yolo': {'x': float(x_yolo), 'y': float(y_yolo)}
             })
         
@@ -546,48 +596,85 @@ class SimpleDetector:
         return kept_detections
 
 
-    async def process_batch(self, points):
-        """Process a batch of points with concurrent tile fetching"""
+    async def process_batch(self, points, batch_size=8):
+        """Process a batch of points with optimized concurrent operations"""
         batch_detections = []
         batch_coverages = []
-        timing_stats = {
-            'tile_fetching': 0,
-            'inference': 0,
-            'coordinate_processing': 0
-        }
+        timing_stats = {'tile_fetching': 0, 'inference': 0}
         
-        for lat, lon in points:
+        # Group points into sub-batches for model inference
+        for i in range(0, len(points), batch_size):
+            sub_batch = points[i:i+batch_size]
+            images = []
+            preview_infos = []
+            
+            # Fetch tiles for all points in sub-batch concurrently
             t0 = time.time()
-            image, preview_info, target_bounds = await self.get_image(lat, lon)
+            fetch_tasks = [self.get_image(lat, lon) for lat, lon in sub_batch]
+            results = await asyncio.gather(*fetch_tasks)
             timing_stats['tile_fetching'] += time.time() - t0
             
-            if image is not None:
-                # Time the inference
+            # Prepare valid images and preview infos for batch inference
+            for image, preview_info, target_bounds in results:
+                if image is not None:
+                    images.append(image)
+                    preview_infos.append(preview_info)
+                    batch_coverages.append({
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [target_bounds['west'], target_bounds['south']],
+                                [target_bounds['east'], target_bounds['south']],
+                                [target_bounds['east'], target_bounds['north']],
+                                [target_bounds['west'], target_bounds['north']],
+                                [target_bounds['west'], target_bounds['south']]
+                            ]]
+                        },
+                        "properties": {
+                            "center": {"lat": lat, "lon": lon}
+                        }
+                    })
+            
+            # Run batch inference if we have valid images
+            if images:
                 t0 = time.time()
-                detections = self.detect(image, preview_info)
+                detections = self.detect_batch(images, preview_infos, batch_size=len(images))
                 timing_stats['inference'] += time.time() - t0
-                
                 batch_detections.extend(detections)
-                
-                batch_coverages.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [[
-                            [target_bounds['west'], target_bounds['south']],
-                            [target_bounds['east'], target_bounds['south']],
-                            [target_bounds['east'], target_bounds['north']],
-                            [target_bounds['west'], target_bounds['north']],
-                            [target_bounds['west'], target_bounds['south']]
-                        ]]
-                    },
-                    "properties": {
-                        "center": {"lat": lat, "lon": lon},
-                        "cars_detected": len(detections)
-                    }
-                })
         
         return batch_detections, batch_coverages, timing_stats
+
+    def detect_batch(self, images, preview_infos, batch_size=4):
+        """Run YOLO detection on images one at a time (model requires batch_size=1)"""
+        all_detections = []
+        
+        # Process each image individually since model requires batch_size=1
+        for img, preview_info in zip(images, preview_infos):
+            # Preprocess single image
+            img_640 = img.resize((self.model_size, self.model_size))
+            img_array = np.array(img_640)
+            img_array = img_array.astype(np.float32) / 255.0
+            img_array = img_array.transpose(2, 0, 1)
+            img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension of 1
+
+            # Run inference
+            if 'CUDAExecutionProvider' in self.model.get_providers():
+                import torch
+                torch.cuda.synchronize()
+            
+            outputs = self.model.run(None, {self.model.get_inputs()[0].name: img_array})
+            
+            if 'CUDAExecutionProvider' in self.model.get_providers():
+                torch.cuda.synchronize()
+
+            # Process detections
+            boxes = outputs[0][0]
+            boxes = boxes[boxes[:, 4] >= self.confidence_threshold]
+            detections = self._process_detections(boxes, preview_info)
+            all_detections.extend(detections)
+
+        return all_detections
 
 
 
@@ -600,7 +687,7 @@ if __name__ == "__main__":
     model_path = os.path.join(base_dir, 'models', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
     
     # Read the shapefile and set up output directory
-    shp_path = os.path.join(base_dir, 'gis', 'frames', 'la.shp')
+    shp_path = os.path.join(base_dir, 'gis', 'frames', 'warsaw_central.shp')
     frame_name = os.path.splitext(os.path.basename(shp_path))[0]
     output_dir = os.path.join(base_dir, 'output', frame_name)
     
