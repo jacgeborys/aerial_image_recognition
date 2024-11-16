@@ -33,13 +33,48 @@ class SimpleDetector:
         earth_circumference = 40075016.686
         self.meters_per_pixel = earth_circumference / (2**self.zoom) / 256
         
-        # Try to use CUDA if available
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'CUDAExecutionProvider' in ort.get_available_providers() else ['CPUExecutionProvider']
-        print(f"Using ONNX providers: {providers}")
+        # Configure ONNX providers with optimized settings
+        providers = []
+        provider_options = []
+
+        if 'TensorrtExecutionProvider' in ort.get_available_providers():
+            # TensorRT settings
+            provider_options.append({
+                "trt_max_workspace_size": "5368709120",  # 5GB
+                "trt_fp16_enable": True,  # Enable FP16 precision
+            })
+            providers.append('TensorrtExecutionProvider')
         
+        if 'CUDAExecutionProvider' in ort.get_available_providers():
+            # CUDA settings
+            provider_options.append({
+                "device_id": 0,
+                "gpu_mem_limit": "5368709120",  # 5GB
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "cudnn_conv_algo_search": "EXHAUSTIVE",
+                "do_copy_in_default_stream": True,
+            })
+            providers.append('CUDAExecutionProvider')
+        
+        providers.append('CPUExecutionProvider')
+        provider_options.append({})
+
+        print(f"Using ONNX providers: {providers}")
+        print(f"With options: {provider_options}")
+        
+        # Create inference session with optimized settings
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_mem_reuse = True
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+
         self.model = ort.InferenceSession(
-            model_path, 
-            providers=providers
+            model_path,
+            sess_options=sess_options,
+            providers=providers,
+            provider_options=provider_options
         )
         
         self.xyz_url = 'http://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
@@ -366,17 +401,28 @@ class SimpleDetector:
         bounds = preview_info['spatial_info']['bounds']
         crop_size = preview_info['image_info']['crop_size']
         
+        # Preprocess image
         image_640 = image.resize((self.model_size, self.model_size))
         img_array = np.array(image_640)
         img_array = img_array.astype(np.float32) / 255.0
         img_array = img_array.transpose(2, 0, 1)
         img_array = np.expand_dims(img_array, axis=0)
         
+        # Run inference with CUDA synchronization
+        if 'CUDAExecutionProvider' in self.model.get_providers():
+            import torch
+            torch.cuda.synchronize()  # Ensure GPU sync
+        
         outputs = self.model.run(None, {self.model.get_inputs()[0].name: img_array})
+        
+        if 'CUDAExecutionProvider' in self.model.get_providers():
+            torch.cuda.synchronize()  # Ensure GPU sync
+        
         boxes = outputs[0][0]
         conf_mask = boxes[:, 4] >= self.confidence_threshold
         boxes = boxes[conf_mask]
         
+        # Process detections
         for box in boxes:
             x_yolo, y_yolo, w, h, conf = box[:5]
             
