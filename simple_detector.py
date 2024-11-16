@@ -16,6 +16,10 @@ import time
 from pyproj import Transformer
 import sys
 from collections import OrderedDict
+import aiohttp
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from rtree import index
 
 
 class SimpleDetector:
@@ -38,38 +42,70 @@ class SimpleDetector:
             providers=providers
         )
         
-        # Single session with adaptive delay
-        self.session = requests.Session()
-        self.session.mount('http://', requests.adapters.HTTPAdapter(max_retries=3))
-        self.session.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
-        
         self.xyz_url = 'http://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
-        self.last_request_time = time.time()
-        self.current_delay = 0.01
-        self.consecutive_errors = 0
         self.session_idx = 0
         self.tile_cache = OrderedDict()
-        self.small_tile_cache = {}
-        self.tile_cache_size = 10000
-        self.current_row_cache = {}  # Cache for current processing row
-        self.previous_row_cache = {}  # Cache for previous row
-        self.cache_hits = 0
-        self.cache_misses = 0
+        self.tile_cache_size = 10000  # Increased cache size
+        
+        # Create event loop
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        
+        # Initialize async session
+        self.session = self.loop.run_until_complete(self._init_session())
+        self.semaphore = asyncio.Semaphore(8)  # Limit concurrent requests
 
-        self.sessions = []
-        for _ in range(4):
-            session = requests.Session()
-            session.mount('http://', requests.adapters.HTTPAdapter(
-                max_retries=3,
-                pool_connections=10,
-                pool_maxsize=10
-            ))
-            session.mount('https://', requests.adapters.HTTPAdapter(
-                max_retries=3,
-                pool_connections=10,
-                pool_maxsize=10
-            ))
-            self.sessions.append(session)
+    async def _init_session(self):
+        """Initialize async session"""
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=10),
+            timeout=aiohttp.ClientTimeout(total=10)
+        )
+
+    def __del__(self):
+        """Cleanup resources"""
+        if hasattr(self, 'session') and self.session is not None:
+            self.loop.run_until_complete(self.session.close())
+        if hasattr(self, 'loop') and self.loop is not None:
+            self.loop.close()
+
+
+
+    async def _fetch_tile_async(self, x, y, z):
+        """Async tile fetching with cache check"""
+        tile_key = (x, y, z)
+        
+        # Check cache first
+        if tile_key in self.tile_cache:
+            return self.tile_cache[tile_key]
+        
+        async with self.semaphore:  # Limit concurrent requests
+            server = self.session_idx % 4
+            self.session_idx = (self.session_idx + 1) % 4
+            url = self.xyz_url.format(s=server, x=x, y=y, z=z)
+
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        content = await response.read()
+                        tile_image = Image.open(BytesIO(content))
+                        
+                        # Update cache
+                        if len(self.tile_cache) >= self.tile_cache_size:
+                            self.tile_cache.popitem(last=False)
+                        self.tile_cache[tile_key] = tile_image
+                        
+                        return tile_image
+            except Exception:
+                return None
+            
+            return None
+
+    async def _fetch_tiles_batch(self, tile_coords):
+        """Fetch multiple tiles concurrently"""
+        tasks = [self._fetch_tile_async(x, y, z) for x, y, z in tile_coords]
+        return await asyncio.gather(*tasks)
+
 
     def _manage_cache(self, new_y):
         """Manage row-based caching when moving to new row"""
@@ -194,8 +230,8 @@ class SimpleDetector:
         return cropped_big_tile
 
     
-    def get_image(self, lat, lon, target_size_meters=64):
-        """Get image centered on coordinates with optimized tile fetching"""
+    async def get_image(self, lat, lon, target_size_meters=64):
+        """Get image centered on coordinates with concurrent tile fetching"""
         meters_per_pixel = self.meters_per_pixel * math.cos(math.radians(lat))
         pixels_needed = int(target_size_meters / meters_per_pixel)
         
@@ -217,43 +253,68 @@ class SimpleDetector:
         max_x = max(nw_tile.x, se_tile.x) + 1
         min_y = min(nw_tile.y, se_tile.y) - 1
         max_y = max(nw_tile.y, se_tile.y) + 1
-        
-        # Pre-calculate all tile coordinates
-        tile_coords = [
-            (tx, ty, self.zoom)
-            for ty in range(min_y, max_y + 1)
-            for tx in range(min_x, max_x + 1)
-        ]
-        
+
+        # Prepare merged image
         tile_width = max_x - min_x + 1
         tile_height = max_y - min_y + 1
         merged = Image.new('RGB', (tile_width * 256, tile_height * 256))
-        
-        # Track fetching statistics
+
+        # Track stats
         tiles_stats = {
-            'total_tiles': len(tile_coords),
+            'total_tiles': (max_x - min_x + 1) * (max_y - min_y + 1),
             'successful_fetches': 0,
             'failed_fetches': 0,
-            'total_fetch_time': 0
+            'total_fetch_time': 0,
+            'cached_tiles': 0
         }
-        
-        fetch_start = time.time()
-        
-        # Batch process tiles
-        for tx, ty, z in tile_coords:
-            tile_start = time.time()
-            img = self._fetch_tile(tx, ty, z)
-            tiles_stats['total_fetch_time'] += time.time() - tile_start
+
+        # Prepare tile coordinates and check cache first
+        fetch_tiles = []
+        cached_images = {}
+
+        for ty in range(min_y, max_y + 1):
+            for tx in range(min_x, max_x + 1):
+                tile_key = (tx, ty, self.zoom)
+                if tile_key in self.tile_cache:
+                    cached_images[tile_key] = self.tile_cache[tile_key]
+                    tiles_stats['cached_tiles'] += 1
+                else:
+                    fetch_tiles.append(tile_key)
+
+        # Fetch missing tiles concurrently
+        if fetch_tiles:
+            t0 = time.time()
+            async with asyncio.TaskGroup() as group:
+                tasks = {
+                    tile_key: group.create_task(self._fetch_tile_async(*tile_key))
+                    for tile_key in fetch_tiles
+                }
             
-            if img:
-                tiles_stats['successful_fetches'] += 1
-                px = (tx - min_x) * 256
-                py = (ty - min_y) * 256
-                merged.paste(img, (px, py))
-            else:
-                tiles_stats['failed_fetches'] += 1
-        
-        # Calculate bounds and crop image
+            # Process results
+            for tile_key, task in tasks.items():
+                try:
+                    img = task.result()
+                    if img:
+                        tiles_stats['successful_fetches'] += 1
+                        cached_images[tile_key] = img
+                    else:
+                        tiles_stats['failed_fetches'] += 1
+                except Exception as e:
+                    tiles_stats['failed_fetches'] += 1
+                    tqdm.write(f"Error fetching tile {tile_key}: {str(e)}")
+            
+            tiles_stats['total_fetch_time'] = time.time() - t0
+
+        # Paste all images (both cached and newly fetched)
+        for ty in range(min_y, max_y + 1):
+            for tx in range(min_x, max_x + 1):
+                tile_key = (tx, ty, self.zoom)
+                if tile_key in cached_images:
+                    px = (tx - min_x) * 256
+                    py = (ty - min_y) * 256
+                    merged.paste(cached_images[tile_key], (px, py))
+
+        # Calculate bounds for cropping
         merged_bounds = {
             'west': mercantile.bounds(min_x, min_y, self.zoom).west,
             'east': mercantile.bounds(max_x, max_y, self.zoom).east,
@@ -381,7 +442,7 @@ class SimpleDetector:
         return detections
 
     def _remove_duplicates(self, detections, distance_threshold=1.0):
-        """Remove duplicate detections within distance threshold using UTM coordinates"""
+        """Remove duplicate detections within distance threshold using UTM coordinates and rtree spatial indexing"""
         if not detections:
             return []
         
@@ -393,75 +454,75 @@ class SimpleDetector:
         # Create transformer from WGS84 to UTM
         transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
         
-        # Convert all detections to UTM
+        # Convert all detections to UTM and store in list for easier access
         utm_detections = []
         for det in detections:
             x, y = transformer.transform(det['lon'], det['lat'])
             utm_detections.append({
                 'x': x,
                 'y': y,
+                'confidence': det['confidence'],
                 'original': det
             })
         
-        # Sort by confidence
-        utm_detections.sort(key=lambda x: x['original']['confidence'], reverse=True)
-        kept = []
+        # Sort by confidence (highest first)
+        utm_detections.sort(key=lambda x: x['confidence'], reverse=True)
         
-        for det1 in utm_detections:
-            keep = True
-            for det2 in kept:
-                dx = det1['x'] - det2['x']
-                dy = det1['y'] - det2['y']
-                distance = math.sqrt(dx*dx + dy*dy)
-                
-                if distance < distance_threshold:
-                    keep = False
+        # Create R-tree index
+        idx = index.Index()
+        kept_detections = []
+        
+        # Process detections in order of confidence
+        for i, det in enumerate(utm_detections):
+            # Define search bounds
+            search_bounds = (
+                det['x'] - distance_threshold,
+                det['y'] - distance_threshold,
+                det['x'] + distance_threshold,
+                det['y'] + distance_threshold
+            )
+            
+            # Check if any higher confidence points are nearby
+            nearby_higher_conf = False
+            for j in idx.intersection(search_bounds):
+                # Calculate exact distance
+                dx = det['x'] - utm_detections[j]['x']
+                dy = det['y'] - utm_detections[j]['y']
+                if (dx*dx + dy*dy) <= distance_threshold*distance_threshold:
+                    nearby_higher_conf = True
                     break
-            if keep:
-                kept.append(det1)
+            
+            if not nearby_higher_conf:
+                kept_detections.append(det['original'])
+                # Add to spatial index
+                idx.insert(i, (det['x'], det['y'], det['x'], det['y']))
         
-        return [det['original'] for det in kept]
+        return kept_detections
 
-    def process_batch(self, points):
-        batch_detections = []  # Added to collect detections
-        batch_coverages = []   # Added to collect coverages
-        batch_stats = {
-            'tiles_fetched': 0,
-            'successful_fetches': 0,
-            'total_detections': 0,
-            'fetch_time': 0
-        }
-        
-        timing_stats = {       # Added to match original return format
+
+    async def process_batch(self, points):
+        """Process a batch of points with concurrent tile fetching"""
+        batch_detections = []
+        batch_coverages = []
+        timing_stats = {
             'tile_fetching': 0,
             'inference': 0,
             'coordinate_processing': 0
         }
         
-        print_interval = 20
-        
-        for idx, (lat, lon) in enumerate(points):
+        for lat, lon in points:
             t0 = time.time()
-            image, preview_info, target_bounds = self.get_image(lat, lon)
-            fetch_time = time.time() - t0
-            
-            timing_stats['tile_fetching'] += fetch_time
-            batch_stats['tiles_fetched'] += 1
-            batch_stats['fetch_time'] += fetch_time
+            image, preview_info, target_bounds = await self.get_image(lat, lon)
+            timing_stats['tile_fetching'] += time.time() - t0
             
             if image is not None:
-                batch_stats['successful_fetches'] += 1
-                
                 # Time the inference
                 t0 = time.time()
                 detections = self.detect(image, preview_info)
-                inference_time = time.time() - t0
-                timing_stats['inference'] += inference_time
+                timing_stats['inference'] += time.time() - t0
                 
                 batch_detections.extend(detections)
-                batch_stats['total_detections'] += len(detections)
                 
-                # Add coverage information
                 batch_coverages.append({
                     "type": "Feature",
                     "geometry": {
@@ -479,16 +540,11 @@ class SimpleDetector:
                         "cars_detected": len(detections)
                     }
                 })
-                
-            # Print less frequently
-            if idx % print_interval == 0:
-                avg_time = batch_stats['fetch_time'] / max(1, batch_stats['tiles_fetched'])
-                tqdm.write(f"\nProcessed {batch_stats['tiles_fetched']} tiles, "
-                        f"avg time: {avg_time:.2f}s, "
-                        f"detections: {batch_stats['total_detections']}")
-
-        # Return the expected tuple
+        
         return batch_detections, batch_coverages, timing_stats
+
+
+
 
 if __name__ == "__main__":
     import time
@@ -593,7 +649,11 @@ if __name__ == "__main__":
             batch_start = time.time()
             
             batch_points = points[i:i+batch_size]
-            batch_detections, batch_coverages, batch_timing = detector.process_batch(batch_points)
+            
+            # Run async batch processing
+            batch_detections, batch_coverages, batch_timing = detector.loop.run_until_complete(
+                detector.process_batch(batch_points)
+            )
             
             batch_time = time.time() - batch_start
             
@@ -602,36 +662,34 @@ if __name__ == "__main__":
             
             processed_tiles += len(batch_points)
             
-            # Print batch timing every 5 batches or when there's an interesting event
-            if i % (5 * batch_size) == 0 or batch_time > 30:  # Print if batch took more than 30s
+            # Print batch timing
+            if i % (5 * batch_size) == 0 or batch_time > 30:
                 tqdm.write(f"\nBatch {i//batch_size + 1}/{n_batches}:")
                 tqdm.write(f"  Tile fetching: {batch_timing['tile_fetching']:.2f}s")
                 tqdm.write(f"  Model inference: {batch_timing['inference']:.2f}s")
-                tqdm.write(f"  Coordinate processing: {batch_timing['coordinate_processing']:.2f}s")
                 tqdm.write(f"  Total batch time: {batch_time:.2f}s")
-                tqdm.write(f"  Cars detected: {len(batch_detections)}")
             
-            # Save checkpoint every 2000 tiles
-            if processed_tiles % 150 < batch_size:
+            # Save checkpoint with duplicate removal
+            if processed_tiles % 2000 < batch_size:
+                unique_detections = detector._remove_duplicates(all_detections.copy(), distance_threshold=1.0)
                 tqdm.write(f"\nSaving checkpoint at {processed_tiles} tiles...")
-                save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+                tqdm.write(f"Removed {len(all_detections) - len(unique_detections)} duplicate detections")
+                save_checkpoint(unique_detections, all_coverages, frame_name, checkpoint_path)
             
             batch_pbar.update(1)
             
-            # Dynamic delay based on batch time
-            if batch_time < 20:  # If batch is processing quickly
-                time.sleep(0.001)
-        
         batch_pbar.close()
         
     except KeyboardInterrupt:
         print("\nInterrupted by user. Saving checkpoint...")
-        save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+        unique_detections = detector._remove_duplicates(all_detections.copy(), distance_threshold=1.0)
+        save_checkpoint(unique_detections, all_coverages, frame_name, checkpoint_path)
         sys.exit(0)
     except Exception as e:
         print(f"\nError occurred: {str(e)}")
         print("Saving checkpoint...")
-        save_checkpoint(all_detections, all_coverages, frame_name, checkpoint_path)
+        unique_detections = detector._remove_duplicates(all_detections.copy(), distance_threshold=1.0)
+        save_checkpoint(unique_detections, all_coverages, frame_name, checkpoint_path)
         raise
 
     timing['processing'] = time.time() - t0
