@@ -677,6 +677,29 @@ class SimpleDetector:
         return all_detections
 
 
+def load_checkpoint(checkpoint_path):
+    """Load progress from checkpoint file"""
+    if os.path.exists(checkpoint_path):
+        with open(checkpoint_path, 'r') as f:
+            checkpoint_data = json.load(f)
+            
+        detections = [
+            {
+                'lon': feature['geometry']['coordinates'][0],
+                'lat': feature['geometry']['coordinates'][1],
+                'confidence': feature['properties']['confidence']
+            }
+            for feature in checkpoint_data['features']
+        ]
+        
+        coverages = checkpoint_data['coverage']
+        processed_tiles = checkpoint_data['metadata']['processed_tiles']
+        
+        print(f"\nLoading checkpoint with {len(detections)} detections")
+        print(f"Resuming from tile {processed_tiles}")
+        
+        return detections, coverages, processed_tiles
+    return [], [], 0
 
 
 if __name__ == "__main__":
@@ -687,7 +710,7 @@ if __name__ == "__main__":
     model_path = os.path.join(base_dir, 'models', 'car_aerial_detection_yolo7_ITCVD_deepness.onnx')
     
     # Read the shapefile and set up output directory
-    shp_path = os.path.join(base_dir, 'gis', 'frames', 'warsaw_central.shp')
+    shp_path = os.path.join(base_dir, 'gis', 'frames', 'madrid.shp')
     frame_name = os.path.splitext(os.path.basename(shp_path))[0]
     output_dir = os.path.join(base_dir, 'output', frame_name)
     
@@ -762,23 +785,27 @@ if __name__ == "__main__":
     print(f"Grid creation took {timing['grid_creation']:.2f}s")
     print(f"Total points to process: {len(points)}")
     
-    # Initialize detector
+    # Initialize detector and load checkpoint
     t0 = time.time()
     detector = SimpleDetector(model_path, output_dir)
     timing['setup'] = time.time() - t0
-    
+
+    # Load checkpoint if exists
+    all_detections, all_coverages, processed_tiles = load_checkpoint(checkpoint_path)
+
     # Process points in batches
     batch_size = 100
-    all_detections = []
-    all_coverages = []
-    processed_tiles = 0
-    
     n_batches = math.ceil(len(points) / batch_size)
     batch_pbar = tqdm(total=n_batches, desc="Processing batches", unit="batch")
-    
+
+    # Skip already processed points
+    start_idx = processed_tiles
+    if start_idx > 0:
+        batch_pbar.update(start_idx // batch_size)
+
     t0 = time.time()
     try:
-        for i in range(0, len(points), batch_size):
+        for i in range(start_idx, len(points), batch_size):
             batch_start = time.time()
             
             batch_points = points[i:i+batch_size]
